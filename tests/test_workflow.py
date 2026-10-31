@@ -38,19 +38,24 @@ class WorkflowTest(unittest.TestCase):
     def request(self, path, method="GET", body=None, token=None):
         headers = {"Content-Type": "application/json"}
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["Cookie"] = f"brightloop_token={token}"
         raw = json.dumps(body).encode() if body is not None else None
         request = Request(self.base + path, data=raw, headers=headers, method=method)
         try:
             with urlopen(request, timeout=5) as response:
-                return response.status, json.load(response)
+                payload = json.load(response)
+                session_cookie = response.headers.get("Set-Cookie")
+                if session_cookie:
+                    self.assertIn("HttpOnly", session_cookie)
+                    payload["_session_cookie"] = session_cookie.split(";", 1)[0].split("=", 1)[1]
+                return response.status, payload
         except HTTPError as error:
             return error.code, json.load(error)
 
     def login(self, email, password):
         status, result = self.request("/api/auth/login", "POST", {"email": email, "password": password})
         self.assertEqual(status, 200, result)
-        return result["token"]
+        return result["_session_cookie"]
 
     def test_renewal_calendar_alerts_and_customer_scope(self):
         admin = self.login("admin@brightloop.test", "Admin@123!")
@@ -80,7 +85,7 @@ class WorkflowTest(unittest.TestCase):
         status, other = self.request("/api/auth/register", "POST", {
             "name": "Second Customer", "email": "second@demo.test", "password": "Customer@123!"})
         self.assertEqual(status, 201, other)
-        other_calendar = self.request(f"/api/renewals?month={month}", token=other["token"])[1]
+        other_calendar = self.request(f"/api/renewals?month={month}", token=other["_session_cookie"])[1]
         self.assertEqual(other_calendar["summary"]["due_soon"], 0)
         self.assertEqual(other_calendar["calendar"], [])
 
@@ -107,7 +112,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(next_month["summary"]["scheduled_month"], 1)
         self.assertEqual(next_month["calendar"][0]["renewal_date"], next_date)
         self.assertEqual(self.request(f"/api/renewals?month={month}", token=customer)[1]["summary"]["billed_month"], 1)
-        self.assertEqual(self.request(f"/api/renewals?month={month}", token=other["token"])[1]["summary"]["billed_month"], 0)
+        self.assertEqual(self.request(f"/api/renewals?month={month}", token=other["_session_cookie"])[1]["summary"]["billed_month"], 0)
 
     def test_three_role_billing_flow(self):
         admin = self.login("admin@brightloop.test", "Admin@123!")
@@ -164,8 +169,8 @@ class WorkflowTest(unittest.TestCase):
         status, other = self.request("/api/auth/register", "POST", {
             "name": "Second Customer", "email": "second@demo.test", "password": "Customer@123!"})
         self.assertEqual(status, 201, other)
-        self.assertEqual(self.request("/api/invoices", token=other["token"])[1]["total"], 0)
-        self.assertEqual(self.request(f"/api/subscriptions/{sub_id}/status", "PATCH", {"action": "pause"}, other["token"])[0], 403)
+        self.assertEqual(self.request("/api/invoices", token=other["_session_cookie"])[1]["total"], 0)
+        self.assertEqual(self.request(f"/api/subscriptions/{sub_id}/status", "PATCH", {"action": "pause"}, other["_session_cookie"])[0], 403)
 
 
 if __name__ == "__main__":

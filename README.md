@@ -18,7 +18,7 @@ Open **http://127.0.0.1:8000/**. The database is created automatically in `data/
 | Staff | `staff@brightloop.test` | `Staff@123!` |
 | Customer | `asha@demo.test` | `Customer@123!` |
 
-The sign-in screen has one-click buttons for these accounts. The starter data includes a product, variant, add-on, monthly and yearly plans, a tax rule, a discount, a quotation template, and one active customer subscription due for billing today.
+Sign in with one of these demo accounts. The starter data includes a product, variant, add-on, monthly and yearly plans, a tax rule, a discount, a quotation template, and one active customer subscription due for billing today.
 
 ## Demo story
 
