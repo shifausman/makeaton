@@ -48,3 +48,14 @@
 .renewal-price-lines .grand{font-weight:800;color:#0f8072;border-top:1px solid #e6eeeb;margin-top:.4rem;padding-top:.65rem}
 @media(max-width:1100px){.renewal-alert-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){.renewal-alert-grid{grid-template-columns:1fr}.renewal-calendar-head{align-items:flex-start;flex-direction:column}.renewal-dashboard-note{align-items:flex-start;flex-direction:column}.renewal-grid{min-width:560px}.renewal-day{min-height:100px}}
+
+.plan-grid{align-items:stretch}
+.plan-card{display:flex;flex-direction:column;gap:.65rem}
+.plan-card h3,.plan-card .price,.plan-card .meta{margin:0}
+.plan-description{color:#61777b;font-size:.81rem;line-height:1.5;margin:0;min-height:2.4em}
+.plan-includes{font-size:.7rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#67817e;margin-top:.35rem}
+.plan-features{list-style:none;margin:0 0 .4rem;padding:0;display:grid;gap:.4rem;flex:1}
+.plan-features li{font-size:.78rem;color:#435b60;line-height:1.4;padding-left:1.2rem;position:relative}
+.plan-features li:before{content:'✓';position:absolute;left:0;color:#159e7c;font-weight:800}
+.plan-card>.btn{margin-top:auto;align-self:flex-start}
+.plan-card>.button-row{margin-top:auto}

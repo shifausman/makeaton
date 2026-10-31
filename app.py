@@ -142,6 +142,7 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS plans (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id),
+      description TEXT NOT NULL DEFAULT '', features TEXT NOT NULL DEFAULT '',
       price_cents INTEGER NOT NULL, cycle TEXT NOT NULL CHECK(cycle IN ('daily','weekly','monthly','yearly')),
       min_quantity INTEGER NOT NULL DEFAULT 1, available_from TEXT, available_until TEXT,
       allow_pause INTEGER NOT NULL DEFAULT 0, allow_early_close INTEGER NOT NULL DEFAULT 0,
@@ -164,6 +165,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS subscriptions (
       id INTEGER PRIMARY KEY, number TEXT NOT NULL UNIQUE,
       customer_id INTEGER NOT NULL REFERENCES users(id), plan_id INTEGER NOT NULL REFERENCES plans(id),
+      plan_name_snapshot TEXT, plan_description_snapshot TEXT, plan_features_snapshot TEXT,
+      cycle_snapshot TEXT, allow_pause_snapshot INTEGER, allow_early_close_snapshot INTEGER,
+      allow_renew_snapshot INTEGER, auto_close_snapshot INTEGER,
+      source TEXT NOT NULL DEFAULT 'staff', request_note TEXT NOT NULL DEFAULT '',
       start_date TEXT NOT NULL, expiry_date TEXT, next_billing_date TEXT,
       payment_terms_days INTEGER NOT NULL DEFAULT 14, quote_valid_until TEXT,
       status TEXT NOT NULL CHECK(status IN ('Draft','Quotation','Confirmed','Active','Paused','Closed')),
@@ -200,6 +205,7 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_sub_status_due ON subscriptions(status, next_billing_date);
     CREATE INDEX IF NOT EXISTS idx_sub_customer ON subscriptions(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_plans_active ON plans(active);
     CREATE INDEX IF NOT EXISTS idx_invoice_customer ON invoices(customer_id);
     CREATE INDEX IF NOT EXISTS idx_invoice_due_status ON invoices(status, due_date);
     CREATE INDEX IF NOT EXISTS idx_invoice_date ON invoices(invoice_date);
@@ -207,6 +213,36 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(paid_on);
     """)
+    # Keep the existing local database when this version is first run.
+    additions = {
+        "plans": {"description": "TEXT NOT NULL DEFAULT ''", "features": "TEXT NOT NULL DEFAULT ''"},
+        "subscriptions": {
+            "plan_name_snapshot": "TEXT", "plan_description_snapshot": "TEXT", "plan_features_snapshot": "TEXT",
+            "cycle_snapshot": "TEXT", "allow_pause_snapshot": "INTEGER", "allow_early_close_snapshot": "INTEGER",
+            "allow_renew_snapshot": "INTEGER", "auto_close_snapshot": "INTEGER",
+            "source": "TEXT NOT NULL DEFAULT 'staff'", "request_note": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+    for table, columns in additions.items():
+        existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        for column, definition in columns.items():
+            if column not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    for name, description, features in (
+        ("Growth Monthly", "Flexible monthly access to Brightloop Suite.", "Core subscription dashboard\nMonthly billing\nInvoice history"),
+        ("Growth Yearly", "Annual access to Brightloop Suite.", "Core subscription dashboard\nYearly billing\nInvoice history"),
+    ):
+        db.execute("UPDATE plans SET description=? WHERE name=? AND description=''", (description, name))
+        db.execute("UPDATE plans SET features=? WHERE name=? AND features=''", (features, name))
+    db.execute("""UPDATE subscriptions SET
+        plan_name_snapshot=COALESCE(plan_name_snapshot,(SELECT name FROM plans WHERE id=plan_id)),
+        plan_description_snapshot=COALESCE(plan_description_snapshot,(SELECT description FROM plans WHERE id=plan_id)),
+        plan_features_snapshot=COALESCE(plan_features_snapshot,(SELECT features FROM plans WHERE id=plan_id)),
+        cycle_snapshot=COALESCE(cycle_snapshot,(SELECT cycle FROM plans WHERE id=plan_id)),
+        allow_pause_snapshot=COALESCE(allow_pause_snapshot,(SELECT allow_pause FROM plans WHERE id=plan_id)),
+        allow_early_close_snapshot=COALESCE(allow_early_close_snapshot,(SELECT allow_early_close FROM plans WHERE id=plan_id)),
+        allow_renew_snapshot=COALESCE(allow_renew_snapshot,(SELECT allow_renew FROM plans WHERE id=plan_id)),
+        auto_close_snapshot=COALESCE(auto_close_snapshot,(SELECT auto_close FROM plans WHERE id=plan_id))""")
     if one(db, "SELECT id FROM users LIMIT 1"):
         db.close()
         return
@@ -226,10 +262,14 @@ def init_db():
         addon_id = db.execute("INSERT INTO products(name,type,sales_price_cents,cost_price_cents,notes,tax_id) VALUES(?,?,?,?,?,?)",
                               ("Analytics Add-on", "Add-on", 35000, 8000, "Advanced insights", tax_id)).lastrowid
         db.execute("INSERT INTO variants(product_id,name,price_delta_cents) VALUES(?,?,?)", (core_id, "Odoo brand", 56000))
-        monthly_id = db.execute("INSERT INTO plans(name,product_id,price_cents,cycle,min_quantity,allow_pause,allow_early_close,allow_renew) VALUES(?,?,?,?,?,?,?,?)",
-                                ("Growth Monthly", core_id, 120000, "monthly", 1, 1, 1, 1)).lastrowid
-        db.execute("INSERT INTO plans(name,product_id,price_cents,cycle,min_quantity,allow_pause,allow_early_close,allow_renew) VALUES(?,?,?,?,?,?,?,?)",
-                   ("Growth Yearly", core_id, 1200000, "yearly", 1, 0, 0, 1))
+        monthly_id = db.execute("""INSERT INTO plans(name,product_id,description,features,price_cents,cycle,
+                       min_quantity,allow_pause,allow_early_close,allow_renew) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                                ("Growth Monthly", core_id, "Flexible monthly access to Brightloop Suite.",
+                                 "Core subscription dashboard\nMonthly billing\nInvoice history", 120000, "monthly", 1, 1, 1, 1)).lastrowid
+        db.execute("""INSERT INTO plans(name,product_id,description,features,price_cents,cycle,
+                   min_quantity,allow_pause,allow_early_close,allow_renew) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   ("Growth Yearly", core_id, "Annual access to Brightloop Suite.",
+                    "Core subscription dashboard\nYearly billing\nInvoice history", 1200000, "yearly", 1, 0, 0, 1))
         discount_id = db.execute("INSERT INTO discounts(code,kind,value,min_quantity,scope) VALUES(?,?,?,?,?)",
                                  ("WELCOME10", "percent", 10, 1, "subscription")).lastrowid
         db.execute("INSERT INTO templates(name,plan_id,quantity,valid_days,notes) VALUES(?,?,?,?,?)",
@@ -241,6 +281,16 @@ def init_db():
                             ("SUB-0001", customer_id, monthly_id, start, start, 14, "Active", discount_id, now(), now())).lastrowid
         db.execute("""INSERT INTO subscription_items(subscription_id,product_id,description,quantity,unit_price_cents,tax_id)
                    VALUES(?,?,?,?,?,?)""", (sub_id, core_id, "Brightloop Suite", 1, 120000, tax_id))
+        db.execute("""UPDATE subscriptions SET
+            plan_name_snapshot=(SELECT name FROM plans WHERE id=plan_id),
+            plan_description_snapshot=(SELECT description FROM plans WHERE id=plan_id),
+            plan_features_snapshot=(SELECT features FROM plans WHERE id=plan_id),
+            cycle_snapshot=(SELECT cycle FROM plans WHERE id=plan_id),
+            allow_pause_snapshot=(SELECT allow_pause FROM plans WHERE id=plan_id),
+            allow_early_close_snapshot=(SELECT allow_early_close FROM plans WHERE id=plan_id),
+            allow_renew_snapshot=(SELECT allow_renew FROM plans WHERE id=plan_id),
+            auto_close_snapshot=(SELECT auto_close FROM plans WHERE id=plan_id)
+            WHERE id=?""", (sub_id,))
         db.execute("COMMIT")
     except Exception:
         db.execute("ROLLBACK")
@@ -291,19 +341,92 @@ def product_list(db):
         product["variants"] = [v for v in variants if v["product_id"] == product["id"]]
     return products
 
+
+def plan_values(db, data, current=None):
+    current = dict(current) if current else {}
+    cycle = str(data.get("cycle", current.get("cycle")) or "")
+    if cycle not in ("daily", "weekly", "monthly", "yearly"):
+        raise AppError(400, "Choose a billing cycle.")
+    product_id = integer(data.get("product_id", current.get("product_id")), "Product", 1)
+    if not one(db, "SELECT id FROM products WHERE id=? AND active=1", (product_id,)):
+        raise AppError(404, "Active product not found.")
+    start = optional_iso(data.get("available_from", current.get("available_from")), "Available from")
+    end = optional_iso(data.get("available_until", current.get("available_until")), "Available until")
+    if start and end and end < start:
+        raise AppError(400, "Plan end date must follow its start date.")
+    description = str(data.get("description", current.get("description", "")) or "").strip()
+    features = str(data.get("features", current.get("features", "")) or "").strip()
+    if len(description) > 1000 or len(features) > 2000:
+        raise AppError(400, "Plan description or features are too long.")
+    return {
+        "name": required(data.get("name", current.get("name")), "Plan name"),
+        "product_id": product_id,
+        "description": description,
+        "features": features,
+        "price_cents": cents(data.get("price", current.get("price_cents", 0) / 100), "Plan price"),
+        "cycle": cycle,
+        "min_quantity": integer(data.get("min_quantity", current.get("min_quantity", 1)), "Minimum quantity", 1),
+        "available_from": start,
+        "available_until": end,
+        "allow_pause": int(bool(data.get("allow_pause", current.get("allow_pause", 0)))),
+        "allow_early_close": int(bool(data.get("allow_early_close", current.get("allow_early_close", 0)))),
+        "allow_renew": int(bool(data.get("allow_renew", current.get("allow_renew", 1)))),
+        "auto_close": int(bool(data.get("auto_close", current.get("auto_close", 0)))),
+        "active": int(bool(data.get("active", current.get("active", 1)))),
+    }
+
+
+def create_subscription(db, *, customer_id, plan, quantity, start, expiry=None, payment_terms=14,
+                        quote_days=14, status="Quotation", discount_id=None, variant=None, addon=None,
+                        addon_quantity=None, source="staff", request_note=""):
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        number = f"SUB-{db.execute('SELECT COALESCE(MAX(id),0)+1 FROM subscriptions').fetchone()[0]:04d}"
+        sid = db.execute("""INSERT INTO subscriptions(number,customer_id,plan_id,plan_name_snapshot,
+                    plan_description_snapshot,plan_features_snapshot,cycle_snapshot,allow_pause_snapshot,
+                    allow_early_close_snapshot,allow_renew_snapshot,auto_close_snapshot,source,request_note,
+                    start_date,expiry_date,payment_terms_days,quote_valid_until,status,discount_id,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (number, customer_id, plan["id"], plan["name"], plan["description"], plan["features"],
+                     plan["cycle"], plan["allow_pause"], plan["allow_early_close"], plan["allow_renew"],
+                     plan["auto_close"], source, request_note, start, expiry, payment_terms,
+                     (date.today() + timedelta(days=quote_days)).isoformat(), status, discount_id, now(), now())).lastrowid
+        product = one(db, "SELECT * FROM products WHERE id=?", (plan["product_id"],))
+        description = product["name"] + (f" · {variant['name']}" if variant else "")
+        db.execute("""INSERT INTO subscription_items(subscription_id,product_id,variant_id,description,
+                    quantity,unit_price_cents,tax_id) VALUES(?,?,?,?,?,?,?)""",
+                   (sid, product["id"], variant["id"] if variant else None, description, quantity,
+                    plan["price_cents"] + (variant["price_delta_cents"] if variant else 0), product["tax_id"]))
+        if addon:
+            db.execute("""INSERT INTO subscription_items(subscription_id,product_id,description,quantity,
+                        unit_price_cents,tax_id) VALUES(?,?,?,?,?,?)""",
+                       (sid, addon["id"], addon["name"], addon_quantity, addon["sales_price_cents"], addon["tax_id"]))
+        db.execute("COMMIT")
+        return {"id": sid, "number": number, "status": status}
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+
+
 def subscription_list(db, user, params):
     where = "WHERE s.customer_id=?" if user["role"] == "customer" else "WHERE 1=1"
     args = (user["id"],) if user["role"] == "customer" else ()
     q = params.get("q", [""])[0].strip()
     if q:
-        where += " AND (s.number LIKE ? OR u.name LIKE ? OR p.name LIKE ?)"
+        where += " AND (s.number LIKE ? OR u.name LIKE ? OR COALESCE(s.plan_name_snapshot,p.name) LIKE ?)"
         args += tuple(f"%{q}%" for _ in range(3))
     status = params.get("status", [""])[0]
     if status:
         where += " AND s.status=?"
         args += (status,)
     sql = f"""SELECT s.*,u.name AS customer_name,u.email AS customer_email,
-              p.name AS plan_name,p.cycle,p.allow_pause,p.allow_early_close,p.allow_renew,
+              COALESCE(s.plan_name_snapshot,p.name) AS plan_name,
+              COALESCE(s.plan_description_snapshot,p.description) AS plan_description,
+              COALESCE(s.plan_features_snapshot,p.features) AS plan_features,
+              COALESCE(s.cycle_snapshot,p.cycle) AS cycle,
+              COALESCE(s.allow_pause_snapshot,p.allow_pause) AS allow_pause,
+              COALESCE(s.allow_early_close_snapshot,p.allow_early_close) AS allow_early_close,
+              COALESCE(s.allow_renew_snapshot,p.allow_renew) AS allow_renew,
               d.code AS discount_code FROM subscriptions s
               JOIN users u ON u.id=s.customer_id JOIN plans p ON p.id=s.plan_id
               LEFT JOIN discounts d ON d.id=s.discount_id {where} ORDER BY s.id DESC"""
@@ -359,7 +482,8 @@ def dashboard(db, user):
                   (date.today().isoformat(),))["n"]
     due = one(db, "SELECT COUNT(*) n FROM subscriptions WHERE status='Active' AND next_billing_date<=?",
               (date.today().isoformat(),))["n"]
-    plans = many(db, """SELECT s.id,p.cycle,SUM(si.quantity*si.unit_price_cents) AS amount_cents
+    plans = many(db, """SELECT s.id,COALESCE(s.cycle_snapshot,p.cycle) AS cycle,
+                    SUM(si.quantity*si.unit_price_cents) AS amount_cents
                     FROM subscriptions s JOIN plans p ON p.id=s.plan_id
                     JOIN subscription_items si ON si.subscription_id=s.id
                     WHERE s.status='Active' GROUP BY s.id""")
@@ -430,7 +554,9 @@ def create_invoice(db, sub, period_start):
 def run_billing(db, target):
     db.execute("BEGIN IMMEDIATE")
     try:
-        subscriptions = many(db, """SELECT s.*,p.cycle,p.auto_close FROM subscriptions s JOIN plans p ON p.id=s.plan_id
+        subscriptions = many(db, """SELECT s.*,COALESCE(s.cycle_snapshot,p.cycle) AS cycle,
+                            COALESCE(s.auto_close_snapshot,p.auto_close) AS auto_close
+                            FROM subscriptions s JOIN plans p ON p.id=s.plan_id
                             WHERE s.status='Active' AND s.next_billing_date<=? ORDER BY s.next_billing_date,s.id""", (target,))
         created = 0
         already = 0
@@ -476,7 +602,8 @@ def renewal_calendar(db, user, month):
                    AND (s.expiry_date IS NULL OR s.next_billing_date<=s.expiry_date)"""
     due_select = """SELECT s.id AS subscription_id,s.number AS subscription_number,
                     s.customer_id,u.name AS customer_name,u.email AS customer_email,
-                    p.name AS plan_name,p.cycle,s.next_billing_date AS renewal_date,
+                    COALESCE(s.plan_name_snapshot,p.name) AS plan_name,
+                    COALESCE(s.cycle_snapshot,p.cycle) AS cycle,s.next_billing_date AS renewal_date,
                     s.discount_id,s.payment_terms_days FROM subscriptions s
                     JOIN users u ON u.id=s.customer_id JOIN plans p ON p.id=s.plan_id"""
 
@@ -532,7 +659,9 @@ def renewal_calendar(db, user, month):
     billed_rows = many(db, f"""SELECT i.id AS invoice_id,i.number AS invoice_number,i.status AS invoice_status,
                        i.total_cents AS amount_due_cents,i.period_start AS renewal_date,
                        s.id AS subscription_id,s.number AS subscription_number,s.customer_id,
-                       u.name AS customer_name,u.email AS customer_email,p.name AS plan_name,p.cycle
+                       u.name AS customer_name,u.email AS customer_email,
+                       COALESCE(s.plan_name_snapshot,p.name) AS plan_name,
+                       COALESCE(s.cycle_snapshot,p.cycle) AS cycle
                        FROM invoices i JOIN subscriptions s ON s.id=i.subscription_id
                        JOIN users u ON u.id=i.customer_id JOIN plans p ON p.id=s.plan_id
                        WHERE i.status!='Cancelled' AND i.period_start>=? AND i.period_start<?{invoice_scope}
@@ -768,26 +897,32 @@ class Handler(BaseHTTPRequestHandler):
             return {"id": tid}, 201
         if path == "/api/plans":
             if method == "GET":
-                return {"items": many(db, """SELECT p.*,pr.name AS product_name FROM plans p
-                                  JOIN products pr ON pr.id=p.product_id ORDER BY p.id DESC""")}, 200
+                where = "" if user["role"] == "admin" else "WHERE p.active=1 AND pr.active=1"
+                args = ()
+                if user["role"] == "customer":
+                    where += " AND (p.available_from IS NULL OR p.available_from<=?) AND (p.available_until IS NULL OR p.available_until>=?)"
+                    args = (date.today().isoformat(), date.today().isoformat())
+                return {"items": many(db, f"""SELECT p.*,pr.name AS product_name FROM plans p
+                                  JOIN products pr ON pr.id=p.product_id {where} ORDER BY p.id DESC""", args)}, 200
             allow(user, "admin")
-            cycle = str(data.get("cycle") or "")
-            if cycle not in ("daily", "weekly", "monthly", "yearly"):
-                raise AppError(400, "Choose a billing cycle.")
-            product_id = integer(data.get("product_id"), "Product", 1)
-            if not one(db, "SELECT id FROM products WHERE id=?", (product_id,)):
-                raise AppError(404, "Product not found.")
-            start = optional_iso(data.get("available_from"), "Available from")
-            end = optional_iso(data.get("available_until"), "Available until")
-            if start and end and end < start:
-                raise AppError(400, "Plan end date must follow its start date.")
-            pid = db.execute("""INSERT INTO plans(name,product_id,price_cents,cycle,min_quantity,available_from,
-                  available_until,allow_pause,allow_early_close,allow_renew,auto_close)
-                  VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (required(data.get("name"), "Plan name"), product_id,
-                  cents(data.get("price"), "Plan price"), cycle, integer(data.get("min_quantity", 1), "Minimum quantity", 1),
-                  start, end, int(bool(data.get("allow_pause"))), int(bool(data.get("allow_early_close"))),
-                  int(bool(data.get("allow_renew", True))), int(bool(data.get("auto_close"))))).lastrowid
+            if method != "POST":
+                raise AppError(405, "This plan action is not supported.")
+            values = plan_values(db, data)
+            columns = ",".join(values)
+            markers = ",".join("?" for _ in values)
+            pid = db.execute(f"INSERT INTO plans({columns}) VALUES({markers})", tuple(values.values())).lastrowid
             return {"id": pid}, 201
+        plan_match = re.fullmatch(r"/api/plans/(\d+)", path)
+        if plan_match and method == "PATCH":
+            allow(user, "admin")
+            pid = int(plan_match.group(1))
+            current = one(db, "SELECT * FROM plans WHERE id=?", (pid,))
+            if not current:
+                raise AppError(404, "Plan not found.")
+            values = plan_values(db, data, current)
+            assignments = ",".join(f"{column}=?" for column in values)
+            db.execute(f"UPDATE plans SET {assignments} WHERE id=?", (*values.values(), pid))
+            return {"id": pid, "active": values["active"]}, 200
         if path == "/api/discounts":
             if method == "GET":
                 allow(user, "admin", "staff")
@@ -841,6 +976,25 @@ class Handler(BaseHTTPRequestHandler):
             uid = db.execute("INSERT INTO users(name,email,password_hash,role,created_at) VALUES(?,?,?,?,?)",
                              (name, email, password_hash(password), "staff", now())).lastrowid
             return {"id": uid}, 201
+        if path == "/api/plan-requests" and method == "POST":
+            allow(user, "customer")
+            plan_id = integer(data.get("plan_id"), "Plan", 1)
+            plan = one(db, """SELECT p.* FROM plans p JOIN products pr ON pr.id=p.product_id
+                          WHERE p.id=? AND p.active=1 AND pr.active=1""", (plan_id,))
+            today_iso = date.today().isoformat()
+            if not plan or (plan["available_from"] and today_iso < plan["available_from"]) or (
+                plan and plan["available_until"] and today_iso > plan["available_until"]):
+                raise AppError(404, "This plan is not currently available.")
+            quantity = integer(data.get("quantity", 1), "Quantity", plan["min_quantity"])
+            request_note = str(data.get("note") or "").strip()
+            if len(request_note) > 500:
+                raise AppError(400, "Request note is too long.")
+            if one(db, """SELECT id FROM subscriptions WHERE customer_id=? AND plan_id=?
+                    AND source='customer' AND status='Draft' LIMIT 1""", (user["id"], plan_id)):
+                raise AppError(409, "You already have a pending request for this plan.")
+            return create_subscription(db, customer_id=user["id"], plan=plan, quantity=quantity,
+                                       start=today_iso, status="Draft", source="customer",
+                                       request_note=request_note), 201
         if path == "/api/subscriptions":
             if method == "GET":
                 return subscription_list(db, user, params), 200
@@ -876,26 +1030,19 @@ class Handler(BaseHTTPRequestHandler):
             if addon_id and (not addon or addon_id == plan["product_id"]):
                 raise AppError(400, "Choose a valid add-on product.")
             addon_quantity = integer(data.get("addon_quantity", 1), "Add-on quantity", 1) if addon else None
-            number = f"SUB-{db.execute('SELECT COALESCE(MAX(id),0)+1 FROM subscriptions').fetchone()[0]:04d}"
-            sid = db.execute("""INSERT INTO subscriptions(number,customer_id,plan_id,start_date,expiry_date,
-                       payment_terms_days,quote_valid_until,status,discount_id,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (number, customer_id, plan_id, start, expiry,
-                       integer(data.get("payment_terms_days", 14), "Payment terms", 0, 365),
-                       (date.today() + timedelta(days=quote_days)).isoformat(), status, discount_id, now(), now())).lastrowid
-            product = one(db, "SELECT * FROM products WHERE id=?", (plan["product_id"],))
-            desc = product["name"] + (f" · {variant['name']}" if variant else "")
-            db.execute("""INSERT INTO subscription_items(subscription_id,product_id,variant_id,description,quantity,unit_price_cents,tax_id)
-                     VALUES(?,?,?,?,?,?,?)""", (sid, product["id"], variant_id, desc, quantity,
-                     plan["price_cents"] + (variant["price_delta_cents"] if variant else 0), product["tax_id"]))
-            if addon:
-                db.execute("""INSERT INTO subscription_items(subscription_id,product_id,description,quantity,unit_price_cents,tax_id)
-                         VALUES(?,?,?,?,?,?)""", (sid, addon_id, addon["name"],
-                         addon_quantity, addon["sales_price_cents"], addon["tax_id"]))
-            return {"id": sid, "number": number}, 201
+            return create_subscription(
+                db, customer_id=customer_id, plan=plan, quantity=quantity, start=start, expiry=expiry,
+                payment_terms=integer(data.get("payment_terms_days", 14), "Payment terms", 0, 365),
+                quote_days=quote_days, status=status, discount_id=discount_id, variant=variant,
+                addon=addon, addon_quantity=addon_quantity), 201
         sub_match = re.fullmatch(r"/api/subscriptions/(\d+)/status", path)
         if sub_match and method == "PATCH":
             sid = int(sub_match.group(1))
-            sub = one(db, """SELECT s.*,p.allow_pause,p.allow_early_close,p.allow_renew FROM subscriptions s
+            sub = one(db, """SELECT s.*,
+                         COALESCE(s.allow_pause_snapshot,p.allow_pause) AS allow_pause,
+                         COALESCE(s.allow_early_close_snapshot,p.allow_early_close) AS allow_early_close,
+                         COALESCE(s.allow_renew_snapshot,p.allow_renew) AS allow_renew
+                         FROM subscriptions s
                          JOIN plans p ON p.id=s.plan_id WHERE s.id=?""", (sid,))
             if not sub:
                 raise AppError(404, "Subscription not found.")
@@ -932,7 +1079,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 next_billing = sub["start_date"] if action == "activate" else sub["next_billing_date"]
                 if action == "resume" and next_billing:
-                    plan = one(db, "SELECT cycle FROM plans WHERE id=?", (sub["plan_id"],))
+                    plan = one(db, "SELECT COALESCE(s.cycle_snapshot,p.cycle) AS cycle FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE s.id=?", (sid,))
                     cursor = date.fromisoformat(next_billing)
                     anchor = date.fromisoformat(sub["start_date"])
                     while cursor < date.today():

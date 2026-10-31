@@ -57,6 +57,84 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(status, 200, result)
         return result["_session_cookie"]
 
+    def test_plan_catalog_request_permissions_and_snapshot(self):
+        admin = self.login("admin@brightloop.test", "Admin@123!")
+        staff = self.login("staff@brightloop.test", "Staff@123!")
+        customer = self.login("asha@demo.test", "Customer@123!")
+        product_id = self.request("/api/products", token=staff)[1]["items"][0]["id"]
+        new_plan = {"name": "Launch Monthly", "product_id": product_id,
+                    "description": "A starter subscription", "features": "Priority support\nUsage reports",
+                    "price": 1400, "cycle": "monthly", "min_quantity": 1,
+                    "allow_pause": True, "allow_renew": True}
+        self.assertEqual(self.request("/api/plans", "POST", new_plan, staff)[0], 403)
+        self.assertEqual(self.request("/api/plans", "POST", new_plan, customer)[0], 403)
+        status, created = self.request("/api/plans", "POST", new_plan, admin)
+        self.assertEqual(status, 201, created)
+        plan_id = created["id"]
+        future_plan = dict(new_plan, name="Coming Soon", available_from=(app.date.today() + app.timedelta(days=7)).isoformat())
+        future_id = self.request("/api/plans", "POST", future_plan, admin)[1]["id"]
+        self.assertIn(future_id, [p["id"] for p in self.request("/api/plans", token=staff)[1]["items"]])
+        self.assertNotIn(future_id, [p["id"] for p in self.request("/api/plans", token=customer)[1]["items"]])
+        for token in (staff, customer):
+            visible = self.request("/api/plans", token=token)[1]["items"]
+            self.assertEqual(next(p for p in visible if p["id"] == plan_id)["features"], new_plan["features"])
+        self.assertEqual(self.request(f"/api/plans/{plan_id}", "PATCH", {"name": "Bad edit"}, staff)[0], 403)
+        self.assertEqual(self.request(f"/api/plans/{plan_id}", "PATCH", {"active": False}, customer)[0], 403)
+
+        self.assertEqual(self.request(f"/api/plans/{plan_id}", "PATCH", {
+            "name": "Launch Plus", "description": "Updated from admin", "price": 1500}, admin)[0], 200)
+        for token in (staff, customer):
+            visible = self.request("/api/plans", token=token)[1]["items"]
+            plan = next(p for p in visible if p["id"] == plan_id)
+            self.assertEqual((plan["name"], plan["description"], plan["price_cents"]),
+                             ("Launch Plus", "Updated from admin", 150000))
+
+        status, request = self.request("/api/plan-requests", "POST", {
+            "plan_id": plan_id, "quantity": 2, "note": "Please contact me"}, customer)
+        self.assertEqual(status, 201, request)
+        self.assertEqual(request["status"], "Draft")
+        self.assertEqual(self.request("/api/plan-requests", "POST", {"plan_id": plan_id}, customer)[0], 409)
+        subscription_id = request["id"]
+        own = next(s for s in self.request("/api/subscriptions", token=customer)[1]["items"]
+                   if s["id"] == subscription_id)
+        self.assertEqual((own["source"], own["request_note"], own["plan_name"], own["cycle"]),
+                         ("customer", "Please contact me", "Launch Plus", "monthly"))
+        self.assertEqual((own["lines"][0]["quantity"], own["lines"][0]["unit_price_cents"]), (2, 150000))
+        staff_sub = next(s for s in self.request("/api/subscriptions", token=staff)[1]["items"]
+                         if s["id"] == subscription_id)
+        self.assertEqual(staff_sub["status"], "Draft")
+
+        for action in ("quote", "confirm", "activate"):
+            self.assertEqual(self.request(f"/api/subscriptions/{subscription_id}/status", "PATCH",
+                                          {"action": action}, staff)[0], 200)
+        self.assertEqual(self.request(f"/api/plans/{plan_id}", "PATCH", {
+            "name": "Retired Yearly", "price": 5000, "cycle": "yearly",
+            "allow_pause": False, "active": False}, admin)[0], 200)
+        for token in (staff, customer):
+            self.assertNotIn(plan_id, [p["id"] for p in self.request("/api/plans", token=token)[1]["items"]])
+        self.assertIn(plan_id, [p["id"] for p in self.request("/api/plans", token=admin)[1]["items"]])
+        self.assertEqual(self.request("/api/plan-requests", "POST", {"plan_id": plan_id}, customer)[0], 404)
+        self.assertEqual(self.request("/api/subscriptions", "POST", {
+            "customer_id": own["customer_id"], "plan_id": plan_id, "start_date": app.date.today().isoformat()}, staff)[0], 404)
+        preserved = next(s for s in self.request("/api/subscriptions", token=customer)[1]["items"]
+                         if s["id"] == subscription_id)
+        self.assertEqual((preserved["plan_name"], preserved["cycle"], preserved["allow_pause"],
+                          preserved["lines"][0]["unit_price_cents"]),
+                         ("Launch Plus", "monthly", 1, 150000))
+        self.assertEqual(self.request("/api/billing/run", "POST",
+                                      {"through_date": app.date.today().isoformat()}, staff)[0], 200)
+        after_bill = next(s for s in self.request("/api/subscriptions", token=customer)[1]["items"]
+                          if s["id"] == subscription_id)
+        self.assertEqual(after_bill["next_billing_date"],
+                         app.add_cycle(app.date.today(), "monthly", app.date.today()).isoformat())
+
+        status, other = self.request("/api/auth/register", "POST", {
+            "name": "Other Customer", "email": "other-plan@demo.test", "password": "Customer@123!"})
+        self.assertEqual(status, 201, other)
+        other_token = other["_session_cookie"]
+        self.assertEqual(self.request("/api/subscriptions", token=other_token)[1]["items"], [])
+        self.assertEqual(self.request("/api/invoices", token=other_token)[1]["items"], [])
+
     def test_renewal_calendar_alerts_and_customer_scope(self):
         admin = self.login("admin@brightloop.test", "Admin@123!")
         staff = self.login("staff@brightloop.test", "Staff@123!")

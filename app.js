@@ -18,7 +18,7 @@ const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(
 const items = key => state.data[key]?.items || [];
 const role = () => state.user?.role;
 const canWork = () => role() === 'admin' || role() === 'staff';
-const icon = name => ({dashboard:'◫',catalog:'◈',templates:'▤',staff:'♟',customers:'♙',subscriptions:'↻',renewals:'▦',invoices:'▧',payments:'◉',reports:'▥',account:'◌'}[name] || '•');
+const icon = name => ({dashboard:'◫',catalog:'◈',plans:'◈',templates:'▤',staff:'♟',customers:'♙',subscriptions:'↻',renewals:'▦',invoices:'▧',payments:'◉',reports:'▥',account:'◌'}[name] || '•');
 
 // SECURITY FIX: Safe URL validator for redirects
 const safeUrl = (url) => {
@@ -71,11 +71,11 @@ function toast(message, error=false) {
 
 const navByRole = {
   admin: [['dashboard','Overview'],['catalog','Catalog & rules'],['templates','Quote templates'],['staff','Staff access'],['customers','Customers'],['subscriptions','Subscriptions'],['renewals','Renewals'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
-  staff: [['dashboard','Overview'],['customers','Customers'],['templates','Quote templates'],['subscriptions','Subscriptions'],['renewals','Renewals'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
-  customer: [['dashboard','My overview'],['subscriptions','My subscriptions'],['renewals','My renewals'],['invoices','My invoices'],['account','My account']]
+  staff: [['dashboard','Overview'],['plans','Available Plans'],['customers','Customers'],['templates','Quote templates'],['subscriptions','Subscriptions'],['renewals','Renewals'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
+  customer: [['dashboard','My overview'],['plans','Explore Plans'],['subscriptions','My subscriptions'],['renewals','My renewals'],['invoices','My invoices'],['account','My account']]
 };
-const pageTitles = {dashboard:'Overview',catalog:'Catalog & rules',templates:'Quote templates',staff:'Staff access',customers:'Customers',subscriptions:'Subscriptions',renewals:'Renewal calendar',invoices:'Invoices',payments:'Payments',reports:'Reports',account:'My account'};
-const pageDescriptions = {dashboard:'Your subscription business at a glance.',catalog:'Create the products, plans, taxes and discounts that power billing.',templates:'Reusable starting points for customer quotations.',staff:'Only admins can invite team members.',customers:'Customer accounts and contact details.',subscriptions:'Every quote, active plan and renewal in one place.',renewals:'See what is coming due, what needs attention, and what has been billed.',invoices:'Review, send and track recurring invoices.',payments:'Payments matched to the right invoices.',reports:'A clear view of revenue, collections and what is still owed.',account:'Your account details and access.'};
+const pageTitles = {dashboard:'Overview',catalog:'Catalog & rules',plans:'Available Plans',templates:'Quote templates',staff:'Staff access',customers:'Customers',subscriptions:'Subscriptions',renewals:'Renewal calendar',invoices:'Invoices',payments:'Payments',reports:'Reports',account:'My account'};
+const pageDescriptions = {dashboard:'Your subscription business at a glance.',catalog:'Create the products, plans, taxes and discounts that power billing.',plans:'Browse current plans and choose the one that fits.',templates:'Reusable starting points for customer quotations.',staff:'Only admins can invite team members.',customers:'Customer accounts and contact details.',subscriptions:'Every quote, active plan and renewal in one place.',renewals:'See what is coming due, what needs attention, and what has been billed.',invoices:'Review, send and track recurring invoices.',payments:'Payments matched to the right invoices.',reports:'A clear view of revenue, collections and what is still owed.',account:'Your account details and access.'};
 
 async function loadData() {
   if (!state.user) return;
@@ -84,7 +84,7 @@ async function loadData() {
   state.renewalMonth ||= today().slice(0,7);
   const renewalPath = `/api/renewals?month=${state.renewalMonth}`;
   const paths = role() === 'customer'
-    ? {dashboard:'/api/dashboard',subscriptions:'/api/subscriptions?limit=100',renewals:renewalPath,invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100'}
+    ? {dashboard:'/api/dashboard',plans:'/api/plans',subscriptions:'/api/subscriptions?limit=100',renewals:renewalPath,invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100'}
     : {dashboard:'/api/dashboard',reports:`/api/reports?from=${reportFrom}&to=${reportTo}`,products:'/api/products',plans:'/api/plans',taxes:'/api/taxes',discounts:'/api/discounts',templates:'/api/templates',customers:'/api/customers?limit=100',subscriptions:'/api/subscriptions?limit=100',renewals:renewalPath,invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100',...(role() === 'admin' ? {staff:'/api/staff'} : {})};
   const values = await Promise.all(Object.entries(paths).map(async ([key,path]) => [key, await api(path)]));
   state.data = Object.fromEntries(values);
@@ -96,8 +96,16 @@ async function refresh(message) {
   if (message) toast(message);
 }
 
+async function refreshPlans() {
+  if (!state.user) return;
+  const latest = await api('/api/plans');
+  const changed = JSON.stringify(latest.items) !== JSON.stringify(items('plans'));
+  state.data.plans = latest;
+  if (changed && !modalRoot.children.length && ['plans','catalog','templates'].includes(state.view)) renderApp();
+}
+
 function badge(status) {
-  const color = ({Active:'green',Paid:'green',Confirmed:'blue',Quotation:'blue',Draft:'gray',Paused:'amber',Closed:'gray',Cancelled:'red'})[status] || 'gray';
+  const color = ({Active:'green',Paid:'green',Confirmed:'blue',Quotation:'blue',Draft:'gray',Requested:'amber',Paused:'amber',Closed:'gray',Cancelled:'red'})[status] || 'gray';
   return `<span class="badge badge-${color}">${esc(status)}</span>`;
 }
 function empty(title, note='There is nothing here yet.') { return `<div class="empty"><div class="empty-icon">◈</div><strong>${esc(title)}</strong><span>${esc(note)}</span></div>`; }
@@ -209,13 +217,14 @@ function renderApp() {
   const action = state.view === 'subscriptions' && canWork() ? `<button class="btn btn-primary" data-action="new-quote">+ New quotation</button>`
     : state.view === 'invoices' && canWork() ? `<button class="btn btn-primary" data-action="run-billing">↻ Run billing</button>`
     : state.view === 'payments' && canWork() ? `<button class="btn btn-primary" data-action="new-payment">+ Record payment</button>` : '';
-  root.innerHTML = `<div class="app-shell"><aside class="sidebar" id="sidebar"><div class="brand brand-light"><div class="brand-mark">b</div>brightloop</div><div class="sidebar-label">WORKSPACE</div><nav class="nav-list" aria-label="Main navigation">${nav.map(([id,label])=>`<button class="nav-item ${state.view===id?'active':''}" data-action="nav" data-view="${id}"><span class="nav-icon">${icon(id)}</span>${esc(label)}</button>`).join('')}</nav><div class="side-bottom"><div class="user-mini"><div class="avatar">${esc(state.user.name[0].toUpperCase())}</div><div><strong>${esc(state.user.name)}</strong><span>${esc(role())} workspace</span></div></div><button class="nav-item" data-action="logout"><span class="nav-icon">↪</span>Sign out</button></div></aside><main class="main"><header class="topbar"><div><button class="btn btn-ghost btn-sm mobile-menu" data-action="menu">☰ Menu</button><div class="eyebrow">${role()==='customer'?'CUSTOMER PORTAL':'BRIGHTLOOP OPERATIONS'}</div><h1>${state.view==='dashboard'?`Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc(name)}.`:esc(pageTitles[state.view])}</h1><p>${state.view==='dashboard'&&role()==='customer'?'Your plans, invoices and billing dates at a glance.':esc(pageDescriptions[state.view])}</p></div><div class="header-actions"><span class="date-pill">${dateText(today())}</span>${action}</div></header><div id="page-content">${renderPage()}</div></main></div>`;
+root.innerHTML = `<div class="app-shell"><aside class="sidebar" id="sidebar"><div class="brand brand-light"><div class="brand-mark">b</div>brightloop</div><div class="sidebar-label">WORKSPACE</div><nav class="nav-list" aria-label="Main navigation">${nav.map(([id,label])=>`<button class="nav-item ${state.view===id?'active':''}" data-action="nav" data-view="${id}"><span class="nav-icon">${icon(id)}</span>${esc(label)}</button>`).join('')}</nav><div class="side-bottom"><div class="user-mini"><div class="avatar">${esc(state.user.name[0].toUpperCase())}</div><div><strong>${esc(state.user.name)}</strong><span>${esc(role())} workspace</span></div></div><button class="nav-item" data-action="logout"><span class="nav-icon">↪</span>Sign out</button></div></aside><main class="main"><header class="topbar"><div><button class="btn btn-ghost btn-sm mobile-menu" data-action="menu">☰ Menu</button><div class="eyebrow">${role()==='customer'?'CUSTOMER PORTAL':'BRIGHTLOOP OPERATIONS'}</div><h1>${state.view==='dashboard'?`Good ${new Date().getHours()<12?'morning':new Date().getHours()<17?'afternoon':'evening'}, ${esc(name)}.`:esc(state.view==='plans'&&role()==='customer'?'Explore Plans':pageTitles[state.view])}</h1><p>${state.view==='dashboard'&&role()==='customer'?'Your plans, invoices and billing dates at a glance.':esc(pageDescriptions[state.view])}</p></div><div class="header-actions"><span class="date-pill">${dateText(today())}</span>${action}</div></header><div id="page-content">${renderPage()}</div></main></div>`;
 }
 
 function renderPage() {
   switch (state.view) {
     case 'dashboard': return renderDashboard();
     case 'catalog': return renderCatalog();
+    case 'plans': return renderExplorePlans();
     case 'templates': return renderTemplates();
     case 'staff': return renderStaff();
     case 'customers': return renderCustomers();
@@ -306,14 +315,32 @@ async function selectRenewalMonth(candidate) {
   renderApp();
 }
 
+const cycleLabel = cycle => ({daily:'day',weekly:'week',monthly:'month',yearly:'year'})[cycle] || cycle;
+function planFeatures(plan) {
+  const features = String(plan.features || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  return features.length ? `<ul class="plan-features">${features.map(feature => `<li>${esc(feature)}</li>`).join('')}</ul>` : '<p class="meta">No included features listed.</p>';
+}
+function renderExplorePlans() {
+  const plans = items('plans');
+return `<div class="role-note">${role()==='customer'?'Choose a plan and send a request. Staff will prepare the quotation before your subscription starts.':'These are the active plans available for new quotations.'}</div><div class="grid-three plan-grid">${plans.map(plan => `<div class="card catalog-card plan-card"><div class="type">${esc(plan.product_name)} · ${esc(plan.cycle)} billing</div><h3>${esc(plan.name)}</h3><p class="plan-description">${esc(plan.description || 'Subscription plan')}</p><div class="price">${money(plan.price_cents)} <span class="small muted">/ ${esc(cycleLabel(plan.cycle))}</span></div><div class="plan-includes">Included features</div>${planFeatures(plan)}<p class="meta">Minimum quantity: ${plan.min_quantity}${plan.available_from?`<br>Available from ${dateText(plan.available_from)}`:""}${plan.available_until?`<br>Available until ${dateText(plan.available_until)}`:""}</p><button class="btn btn-primary" data-action="${role()==='customer'?'request-plan':'quote-plan'}" data-id="${plan.id}">${role()==='customer'?'Select plan':'Use for quotation'}</button></div>`).join('') || empty('No plans available','Check back when the admin publishes a plan.')}</div>`;
+}
+function renderAdminPlans() {
+  const plans = items('plans');
+  return `<section class="catalog-section">${sectionHead('Billing plans', '<button class="btn btn-sm btn-primary" data-action="new-plan">+ Plan</button>')}<div class="grid-three plan-grid">${plans.map(plan => `<div class="card catalog-card plan-card"><div class="split-head"><div class="type">${esc(plan.product_name)} · ${esc(plan.cycle)}</div>${badge(plan.active?'Active':'Inactive')}</div><h3>${esc(plan.name)}</h3><p class="plan-description">${esc(plan.description || 'No description yet')}</p><div class="price">${money(plan.price_cents)} <span class="small muted">/ ${esc(cycleLabel(plan.cycle))}</span></div>${planFeatures(plan)}<p class="meta">Minimum ${plan.min_quantity}${plan.available_until?` · Until ${dateText(plan.available_until)}`:''}</p><div class="button-row"><button class="btn btn-sm btn-soft" data-action="edit-plan" data-id="${plan.id}">Edit</button><button class="btn btn-sm ${plan.active?'btn-ghost':'btn-primary'}" data-action="toggle-plan" data-id="${plan.id}">${plan.active?'Deactivate':'Activate'}</button></div></div>`).join('') || empty('No plans yet')}</div></section>`;
+}
 function renderCatalog() {
+  return renderCatalogBase().replace(/<section class="catalog-section"><div class="list-head"><h2>Billing plans<\/h2>[\s\S]*?<\/section>/, renderAdminPlans());
+}
+
+function renderCatalogBase() {
   const products = items('products'), plans = items('plans'), taxes=items('taxes'), discounts=items('discounts');
   const per={daily:'day',weekly:'week',monthly:'month',yearly:'year'};
   return `<div class="role-note">Only admins can create billing rules. Staff use these rules when preparing subscriptions and invoices.</div><section class="catalog-section">${sectionHead('Products & variants',`<div class="button-row"><button class="btn btn-sm btn-ghost" data-action="new-variant">+ Variant</button><button class="btn btn-sm btn-primary" data-action="new-product">+ Product</button></div>`)}<div class="grid-three">${products.map(p=>`<div class="card catalog-card"><div class="type">${esc(p.type)}</div><h3>${esc(p.name)}</h3><div class="price">${money(p.sales_price_cents)}</div><p class="meta">Cost ${money(p.cost_price_cents)} · ${p.tax_name?`${esc(p.tax_name)} ${p.tax_rate}%`:'No tax'}<br>${p.variants.length?`Variants: ${p.variants.map(v=>`${esc(v.name)} (+${money(v.price_delta_cents)})`).join(', ')}`:'No variants yet'}</p></div>`).join('') || empty('No products yet')}</div></section><section class="catalog-section">${sectionHead('Billing plans',`<button class="btn btn-sm btn-primary" data-action="new-plan">+ Plan</button>`)}<div class="grid-three">${plans.map(p=>`<div class="card catalog-card"><div class="type">${esc(p.product_name)} · ${esc(p.cycle)}</div><h3>${esc(p.name)}</h3><div class="price">${money(p.price_cents)} <span class="small muted">/ ${per[p.cycle]}</span></div><p class="meta">Minimum ${p.min_quantity} · ${p.allow_pause?'Can pause':'No pause'} · ${p.allow_early_close?'Can close early':'Fixed term'}${p.available_until?`<br>Available until ${dateText(p.available_until)}`:''}</p></div>`).join('') || empty('No plans yet')}</div></section><div class="grid-two catalog-section"><section><div class="list-head"><h2>Tax rules</h2><button class="btn btn-sm btn-primary" data-action="new-tax">+ Tax</button></div><div class="card card-pad">${taxes.length?taxes.map(t=>`<div class="mini-row"><div><strong>${esc(t.name)}</strong><small>Applied to products using this tax</small></div><strong>${esc(t.rate)}%</strong></div>`).join(''):empty('No taxes')}</div></section><section><div class="list-head"><h2>Discount rules</h2><button class="btn btn-sm btn-primary" data-action="new-discount">+ Discount</button></div><div class="card card-pad">${discounts.length?discounts.map(d=>`<div class="mini-row"><div><strong>${esc(d.code)}</strong><small>${esc(d.scope)} · ${d.usage_limit?`${d.usage_count}/${d.usage_limit} uses`:'Unlimited uses'}</small></div><strong>${d.kind==='percent'?`${d.value}%`:money(Math.round(d.value*100))}</strong></div>`).join(''):empty('No discounts')}</div></section></div>`;
 }
 
 function renderTemplates() {
-  const rows=items('templates').map(t=>`<tr><td><strong>${esc(t.name)}</strong><span class="subtext">${esc(t.notes)}</span></td><td>${esc(t.plan_name)}</td><td>${t.quantity}</td><td>${t.valid_days} days</td><td><button class="btn btn-sm btn-soft" data-action="quote-from-template" data-id="${t.id}">Use template</button></td></tr>`);
+  const activeIds=new Set(items('plans').filter(p=>p.active).map(p=>p.id));
+  const rows=items('templates').filter(t=>role()==='admin'||activeIds.has(t.plan_id)).map(t=>`<tr><td><strong>${esc(t.name)}</strong><span class="subtext">${esc(t.notes)}</span></td><td>${esc(t.plan_name)}</td><td>${t.quantity}</td><td>${t.valid_days} days</td><td><button class="btn btn-sm btn-soft" data-action="quote-from-template" data-id="${t.id}" ${activeIds.has(t.plan_id)?'':'disabled title="Plan inactive"'}>Use template</button></td></tr>`);
   return `${sectionHead('Reusable offers',`<button class="btn btn-primary" data-action="new-template">+ New template</button>`)}<div class="card">${table(['Template','Plan','Quantity','Valid for','Action'],rows,'No quotation templates yet')}</div>`;
 }
 function renderStaff() {
@@ -343,7 +370,7 @@ function renderSubscriptions() {
   const query=(state.filter.subQuery||'').toLowerCase();
   const status=state.filter.subStatus||'';
   const filtered=subs.filter(s=>(!status||s.status===status)&&(!query||`${s.number} ${s.customer_name} ${s.plan_name}`.toLowerCase().includes(query)));
-  const rows=filtered.map(s=>`<tr><td><button class="btn-link" data-action="sub-detail" data-id="${s.id}">${esc(s.number)}</button><span class="subtext">${dateText(s.start_date)}</span></td>${canWork()?`<td><strong>${esc(s.customer_name)}</strong><span class="subtext">${esc(s.customer_email)}</span></td>`:''}<td>${esc(s.plan_name)}<span class="subtext">${esc(s.cycle)} billing</span></td><td>${badge(s.status)}</td><td>${dateText(s.next_billing_date)}</td><td><div class="inline-actions">${subActions(s)||'<span class="muted">—</span>'}</div></td></tr>`);
+const rows=filtered.map(s=>`<tr><td><button class="btn-link" data-action="sub-detail" data-id="${s.id}">${esc(s.number)}</button><span class="subtext">${dateText(s.start_date)}</span></td>${canWork()?`<td><strong>${esc(s.customer_name)}</strong><span class="subtext">${esc(s.customer_email)}</span></td>`:''}<td>${esc(s.plan_name)}<span class="subtext">${esc(s.cycle)} billing${canWork()&&s.source==='customer'?' · Customer request':''}</span></td><td>${badge(!canWork()&&s.source==='customer'&&s.status==='Draft'?'Requested':s.status)}</td><td>${dateText(s.next_billing_date)}</td><td><div class="inline-actions">${subActions(s)||'<span class="muted">—</span>'}</div></td></tr>`);
   return `<div class="list-head"><h2>${canWork()?'Subscription pipeline':'Your plans'}</h2><div class="filters"><input class="search-input" id="sub-search" placeholder="Search subscriptions" value="${esc(state.filter.subQuery||'')}"><select id="sub-filter"><option value="">All statuses</option>${['Draft','Quotation','Confirmed','Active','Paused','Closed'].map(x=>`<option ${status===x?'selected':''}>${x}</option>`).join('')}</select></div></div><div class="card">${table(['Number',...(canWork()?['Customer']:[]),'Plan','Status','Next bill','Actions'],rows,'No subscriptions match')}</div><p class="small muted" style="margin:1rem 0">Showing the latest ${subs.length} subscriptions. Use the filters to narrow this view.</p>`;
 }
 
@@ -409,24 +436,59 @@ const optionList=(list,label='name')=>[{value:'',label:'Choose…'},...list.map(
 
 function newProduct(){showForm('Add product',[{name:'name',label:'Product name',required:true},{name:'type',label:'Type',type:'select',options:[{value:'Software',label:'Software'},{value:'Add-on',label:'Add-on'},{value:'Service',label:'Service'}]},{name:'sales_price',label:'Sales price (₹)',type:'number',step:'.01',min:0,required:true},{name:'cost_price',label:'Cost price (₹)',type:'number',step:'.01',min:0,value:0},{name:'tax_id',label:'Tax rule',type:'select',options:optionList(items('taxes'))},{name:'notes',label:'Notes',type:'textarea',full:true}], 'Create product',async v=>{await api('/api/products','POST',v);await refresh('Product created.');});}
 function newVariant(){showForm('Add product variant',[{name:'product_id',label:'Product',type:'select',options:optionList(items('products')),required:true},{name:'name',label:'Variant name',required:true,placeholder:'e.g. Odoo brand'},{name:'price_delta',label:'Add to price (₹)',type:'number',step:'.01',min:0,value:0,required:true}], 'Create variant',async v=>{await api('/api/variants','POST',v);await refresh('Variant added.');});}
-function newPlan(){showForm('Create billing plan',[{name:'name',label:'Plan name',required:true,placeholder:'e.g. Growth Monthly'},{name:'product_id',label:'Product',type:'select',options:optionList(items('products')),required:true},{name:'price',label:'Price per cycle (₹)',type:'number',step:'.01',min:0,required:true},{name:'cycle',label:'Billing frequency',type:'select',options:['daily','weekly','monthly','yearly'].map(x=>({value:x,label:x[0].toUpperCase()+x.slice(1)}))},{name:'min_quantity',label:'Minimum quantity',type:'number',min:1,value:1},{name:'available_from',label:'Available from',type:'date'},{name:'available_until',label:'Available until',type:'date'},{name:'allow_pause',label:'Allow pause and resume',type:'checkbox'},{name:'allow_early_close',label:'Allow early close',type:'checkbox'},{name:'allow_renew',label:'Allow renewal',type:'checkbox',value:true},{name:'auto_close',label:'Close when plan ends',type:'checkbox'}], 'Create plan',async v=>{await api('/api/plans','POST',v);await refresh('Plan created.');});}
+function newPlan(plan=null){
+  const fields=[
+    {name:'name',label:'Plan name',required:true,value:plan?.name||'',placeholder:'e.g. Growth Monthly'},
+    {name:'product_id',label:'Product',type:'select',options:optionList(items('products')),value:plan?.product_id||'',required:true},
+    {name:'description',label:'Description',type:'textarea',value:plan?.description||'',full:true},
+    {name:'features',label:'Included features (one per line)',type:'textarea',value:plan?.features||'',full:true},
+    {name:'price',label:'Price per cycle (₹)',type:'number',step:'.01',min:0,required:true,value:plan?(plan.price_cents/100).toFixed(2):''},
+    {name:'cycle',label:'Billing frequency',type:'select',options:['daily','weekly','monthly','yearly'].map(x=>({value:x,label:x[0].toUpperCase()+x.slice(1)})),value:plan?.cycle||'monthly'},
+    {name:'min_quantity',label:'Minimum quantity',type:'number',min:1,value:plan?.min_quantity||1},
+    {name:'available_from',label:'Available from',type:'date',value:plan?.available_from||''},
+    {name:'available_until',label:'Available until',type:'date',value:plan?.available_until||''},
+    {name:'allow_pause',label:'Allow pause and resume',type:'checkbox',value:!!plan?.allow_pause},
+    {name:'allow_early_close',label:'Allow early close',type:'checkbox',value:!!plan?.allow_early_close},
+    {name:'allow_renew',label:'Allow renewal',type:'checkbox',value:plan?!!plan.allow_renew:true},
+    {name:'auto_close',label:'Close when plan ends',type:'checkbox',value:!!plan?.auto_close},
+    {name:'active',label:'Active and available to customers',type:'checkbox',value:plan?!!plan.active:true}
+  ];
+  showForm(plan?'Edit billing plan':'Create billing plan',fields,plan?'Save changes':'Create plan',async values=>{
+    await api(plan?'/api/plans/'+plan.id:'/api/plans',plan?'PATCH':'POST',values);
+    await refresh(plan?'Plan updated.':'Plan created.');
+  });
+}
 function newTax(){showForm('Create tax rule',[{name:'name',label:'Tax name',required:true,placeholder:'e.g. GST'},{name:'rate',label:'Rate (%)',type:'number',step:'.01',min:0,required:true}], 'Create tax',async v=>{await api('/api/taxes','POST',v);await refresh('Tax rule created.');});}
 function newDiscount(){const form=showForm('Create discount rule',[{name:'code',label:'Code',required:true,placeholder:'e.g. SAVE10'},{name:'kind',label:'Discount type',type:'select',options:[{value:'percent',label:'Percentage'},{value:'fixed',label:'Fixed amount (₹)'}]},{name:'value',label:'Value',type:'number',step:'.01',min:0,required:true},{name:'scope',label:'Applies to',type:'select',options:[{value:'subscription',label:'Whole subscription'},{value:'product',label:'One product'}]},{name:'product_id',label:'Product (if selected above)',type:'select',options:optionList(items('products'))},{name:'min_purchase',label:'Minimum purchase (₹)',type:'number',step:'.01',min:0,value:0},{name:'min_quantity',label:'Minimum quantity',type:'number',min:1,value:1},{name:'usage_limit',label:'Usage limit (blank = unlimited)',type:'number',min:1},{name:'starts_on',label:'Starts on',type:'date'},{name:'ends_on',label:'Ends on',type:'date'}], 'Create discount',async v=>{await api('/api/discounts','POST',v);await refresh('Discount rule created.');});return form;}
 function newTemplate(){showForm('New quotation template',[{name:'name',label:'Template name',required:true},{name:'plan_id',label:'Plan',type:'select',options:optionList(items('plans')),required:true},{name:'quantity',label:'Default quantity',type:'number',min:1,value:1},{name:'valid_days',label:'Valid for (days)',type:'number',min:1,value:14},{name:'notes',label:'Notes',type:'textarea',full:true}], 'Create template',async v=>{await api('/api/templates','POST',v);await refresh('Template created.');});}
 function newStaff(){showForm('Add staff member',[{name:'name',label:'Full name',required:true},{name:'email',label:'Email',type:'email',required:true},{name:'password',label:'Temporary password',type:'password',required:true,full:true,placeholder:'9+ characters, upper/lowercase and a symbol'}], 'Add staff',async v=>{await api('/api/staff','POST',v);await refresh('Staff account created.');});}
 
-function newQuote(templateId=null){
-  const templates=items('templates'),plans=items('plans'),products=items('products');
+function newQuote(templateId=null,selectedPlanId=null){
+  const plans=items('plans').filter(p=>p.active);
+  const templates=items('templates').filter(t=>plans.some(p=>p.id===t.plan_id)),products=items('products');
   const template=templates.find(t=>t.id===Number(templateId));
-  const firstPlan=plans.find(p=>p.id===Number(template?.plan_id))||plans[0];
+  const firstPlan=plans.find(p=>p.id===Number(selectedPlanId||template?.plan_id))||plans[0];
   if(!items('customers').length){toast('A customer account is needed before you can create a quotation.',true);return;}
   if(!firstPlan){toast('Create a plan before making a quotation.',true);return;}
   const variantOptions=plan=>optionList(products.find(p=>p.id===plan?.product_id)?.variants||[]);
-  const form=showForm('Create customer quotation',[{name:'customer_id',label:'Customer',type:'select',options:optionList(items('customers')),required:true},{name:'template_id',label:'Start from template',type:'select',options:optionList(templates)},{name:'plan_id',label:'Billing plan',type:'select',options:optionList(plans),value:firstPlan.id,required:true},{name:'quantity',label:'Quantity',type:'number',min:1,value:template?.quantity||firstPlan.min_quantity||1},{name:'variant_id',label:'Product variant',type:'select',options:variantOptions(firstPlan)},{name:'addon_product_id',label:'Optional add-on',type:'select',options:optionList(products.filter(p=>p.id!==firstPlan.product_id))},{name:'addon_quantity',label:'Add-on quantity',type:'number',min:1,value:1},{name:'discount_id',label:'Discount rule',type:'select',options:optionList(items('discounts'),'code')},{name:'start_date',label:'Start date',type:'date',value:today(),required:true},{name:'expiry_date',label:'Expiry date',type:'date'},{name:'payment_terms_days',label:'Payment terms (days)',type:'number',min:0,value:14},{name:'valid_days',label:'Quote valid for (days)',type:'number',min:1,value:template?.valid_days||14},{name:'status',label:'Save as',type:'select',options:[{value:'Quotation',label:'Quotation'},{value:'Draft',label:'Draft'}]}], 'Create quotation',async v=>{delete v.template_id;await api('/api/subscriptions','POST',v);await refresh('Subscription saved. Confirm and activate it when the customer accepts.');});
-  const updatePlan=()=>{const p=plans.find(x=>x.id===Number(form.elements.plan_id.value));form.elements.variant_id.innerHTML=variantOptions(p).map(o=>`<option value="${o.value}">${esc(o.label)}</option>`).join('');form.elements.addon_product_id.innerHTML=optionList(products.filter(x=>x.id!==p?.product_id)).map(o=>`<option value="${o.value}">${esc(o.label)}</option>`).join('');form.elements.quantity.min=p?.min_quantity||1;};
+const form=showForm('Create customer quotation',[{name:'customer_id',label:'Customer',type:'select',options:optionList(items('customers')),required:true},{name:'template_id',label:'Start from template',type:'select',options:optionList(templates)},{name:'plan_id',label:'Billing plan',type:'select',options:optionList(plans),value:firstPlan.id,required:true},{name:'quantity',label:'Quantity',type:'number',min:1,value:template?.quantity||firstPlan.min_quantity||1},{name:'variant_id',label:'Product variant',type:'select',options:variantOptions(firstPlan)},{name:'addon_product_id',label:'Optional add-on',type:'select',options:optionList(products.filter(p=>p.id!==firstPlan.product_id))},{name:'addon_quantity',label:'Add-on quantity',type:'number',min:1,value:1},{name:'discount_id',label:'Discount rule',type:'select',options:optionList(items('discounts'),'code')},{name:'start_date',label:'Start date',type:'date',value:firstPlan.available_from&&firstPlan.available_from>today()?firstPlan.available_from:today(),required:true},{name:'expiry_date',label:'Expiry date',type:'date'},{name:'payment_terms_days',label:'Payment terms (days)',type:'number',min:0,value:14},{name:'valid_days',label:'Quote valid for (days)',type:'number',min:1,value:template?.valid_days||14},{name:'status',label:'Save as',type:'select',options:[{value:'Quotation',label:'Quotation'},{value:'Draft',label:'Draft'}]}], 'Create quotation',async v=>{delete v.template_id;await api('/api/subscriptions','POST',v);await refresh('Subscription saved. Confirm and activate it when the customer accepts.');});
+const updatePlan=()=>{const p=plans.find(x=>x.id===Number(form.elements.plan_id.value));form.elements.variant_id.innerHTML=variantOptions(p).map(o=>`<option value="${o.value}">${esc(o.label)}</option>`).join('');form.elements.addon_product_id.innerHTML=optionList(products.filter(x=>x.id!==p?.product_id)).map(o=>`<option value="${o.value}">${esc(o.label)}</option>`).join('');form.elements.quantity.min=p?.min_quantity||1;if(p?.available_from && form.elements.start_date.value<p.available_from)form.elements.start_date.value=p.available_from;};
   form.elements.plan_id.addEventListener('change',updatePlan);
   form.elements.template_id.addEventListener('change',()=>{const t=templates.find(x=>x.id===Number(form.elements.template_id.value));if(t){form.elements.plan_id.value=t.plan_id;form.elements.quantity.value=t.quantity;form.elements.valid_days.value=t.valid_days;updatePlan();}});
   if(template)form.elements.template_id.value=template.id;
+}
+
+function requestPlan(id) {
+  const plan=items('plans').find(item=>item.id===Number(id));
+  if(!plan){toast('This plan is no longer available. Refresh the page and try again.',true);return;}
+  showForm(`Request ${plan.name}`,[
+    {name:'quantity',label:'Quantity',type:'number',min:plan.min_quantity,value:plan.min_quantity,required:true},
+    {name:'note',label:'Message for the team (optional)',type:'textarea',full:true,placeholder:'Tell us what you need'}
+  ],'Submit request',async values=>{
+    await api('/api/plan-requests','POST',{plan_id:plan.id,quantity:values.quantity,note:values.note});
+    state.view='subscriptions';
+    await refresh('Request sent. Staff can now prepare your quotation.');
+  });
 }
 
 function newPayment(invoiceId=null){
@@ -440,7 +502,7 @@ function newPayment(invoiceId=null){
 function showDetails(title,body,footer=''){
   modalRoot.innerHTML=`<div class="modal-backdrop" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="modal-header"><h2>${esc(title)}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">×</button></div><div class="modal-body">${body}</div>${footer?`<div class="modal-footer">${footer}</div>`:''}</div></div>`;
 }
-function subDetail(id){const s=items('subscriptions').find(x=>x.id===Number(id));if(!s)return;showDetails(s.number,`<dl class="detail-list"><div><dt>Customer</dt><dd>${esc(s.customer_name)}</dd></div><div><dt>Plan</dt><dd>${esc(s.plan_name)}</dd></div><div><dt>Status</dt><dd>${badge(s.status)}</dd></div><div><dt>Billing cycle</dt><dd>${esc(s.cycle)}</dd></div><div><dt>Start date</dt><dd>${dateText(s.start_date)}</dd></div><div><dt>Next billing</dt><dd>${dateText(s.next_billing_date)}</dd></div><div><dt>Expiry</dt><dd>${dateText(s.expiry_date)}</dd></div><div><dt>Payment terms</dt><dd>${s.payment_terms_days} days</dd></div><div><dt>Discount</dt><dd>${esc(s.discount_code||'None')}</dd></div><div><dt>Quote valid until</dt><dd>${dateText(s.quote_valid_until)}</dd></div></dl><h3>Product lines</h3>${table(['Product','Qty','Unit price'],s.lines.map(l=>`<tr><td>${esc(l.description)}</td><td>${l.quantity}</td><td>${money(l.unit_price_cents)}</td></tr>`))}`,`<button class="btn btn-ghost" data-action="close-modal">Close</button>${subActions(s)}`);}
+function subDetail(id){const s=items('subscriptions').find(x=>x.id===Number(id));if(!s)return;showDetails(s.number,`<dl class="detail-list"><div><dt>Customer</dt><dd>${esc(s.customer_name)}</dd></div><div><dt>Plan</dt><dd>${esc(s.plan_name)}</dd></div><div><dt>Status</dt><dd>${badge(s.status)}</dd></div><div><dt>Billing cycle</dt><dd>${esc(s.cycle)}</dd></div><div><dt>Start date</dt><dd>${dateText(s.start_date)}</dd></div><div><dt>Next billing</dt><dd>${dateText(s.next_billing_date)}</dd></div><div><dt>Expiry</dt><dd>${dateText(s.expiry_date)}</dd></div><div><dt>Payment terms</dt><dd>${s.payment_terms_days} days</dd></div><div><dt>Discount</dt><dd>${esc(s.discount_code||'None')}</dd></div><div><dt>Quote valid until</dt><dd>${dateText(s.quote_valid_until)}</dd></div></dl>${s.source==='customer'?`<div class="role-note"><strong>Customer request</strong>${s.request_note?`<br>${esc(s.request_note)}`:' · No message added'}</div>`:''}<h3>Product lines</h3>${table(['Product','Qty','Unit price'],s.lines.map(l=>`<tr><td>${esc(l.description)}</td><td>${l.quantity}</td><td>${money(l.unit_price_cents)}</td></tr>`))}`,`<button class="btn btn-ghost" data-action="close-modal">Close</button>${subActions(s)}`);}
 function invoicePaper(i){return `<div class="invoice-paper"><div class="split-head"><div><div class="brand"><div class="brand-mark">b</div>brightloop</div><p class="small muted" style="margin:.5rem 0 0">Subscription invoice</p></div><div style="text-align:right"><h3 style="margin:0">${esc(i.number)}</h3>${badge(i.status)}</div></div><dl class="detail-list" style="margin:1.4rem 0"><div><dt>Billed to</dt><dd>${esc(i.customer_name)}</dd></div><div><dt>Subscription</dt><dd>${esc(i.subscription_number)}</dd></div><div><dt>Billing period begins</dt><dd>${dateText(i.period_start)}</dd></div><div><dt>Due date</dt><dd>${dateText(i.due_date)}</dd></div></dl>${table(['Item','Qty','Unit','Discount','Tax','Total'],i.lines.map(l=>`<tr><td>${esc(l.description)}</td><td>${l.quantity}</td><td>${money(l.unit_price_cents)}</td><td>${money(l.discount_cents)}</td><td>${money(l.tax_cents)}</td><td>${money(l.total_cents)}</td></tr>`))}<div style="max-width:280px;margin:1rem 0 0 auto"><div class="invoice-total"><span>Subtotal</span><span>${money(i.subtotal_cents)}</span></div><div class="invoice-total"><span>Discount</span><span>− ${money(i.discount_cents)}</span></div><div class="invoice-total"><span>Tax</span><span>${money(i.tax_cents)}</span></div><div class="invoice-total grand"><span>Total</span><span>${money(i.total_cents)}</span></div><div class="invoice-total"><span>Paid</span><span>${money(i.paid_cents)}</span></div><div class="invoice-total"><span>Outstanding</span><span>${money(i.outstanding_cents)}</span></div></div></div>`;}
 function invoiceDetail(id){const i=items('invoices').find(x=>x.id===Number(id));if(!i)return;showDetails(i.number,invoicePaper(i),`<button class="btn btn-ghost" data-action="print-invoice" data-id="${i.id}">Print invoice</button><button class="btn btn-primary" data-action="close-modal">Done</button>`);}
 function printInvoice(id){const i=items('invoices').find(x=>x.id===Number(id));if(!i)return;const win=window.open('','_blank','width=900,height=700');if(!win){toast('Allow pop-ups to print this invoice.',true);return;}win.document.write(`<!doctype html><html><head><title>${esc(i.number)}</title><style>body{font-family:Arial,sans-serif;color:#15313b;padding:30px;max-width:850px;margin:auto}.brand{font-size:24px;font-weight:bold}.brand-mark{display:none}.badge{font-size:12px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd;font-size:13px}th{background:#f3f6f4}.detail-list{display:grid;grid-template-columns:1fr 1fr;gap:10px}dt{font-size:11px;color:#777}dd{margin:3px 0 0;font-weight:bold}.invoice-total{display:flex;justify-content:space-between;padding:7px;border-bottom:1px solid #ddd}</style></head><body>${invoicePaper(i)}</body></html>`);win.document.close();win.focus();setTimeout(()=>win.print(),300);}
@@ -454,7 +516,7 @@ document.addEventListener('click',async event=>{
   const action=target.dataset.action;
   if(action==='backdrop' && event.target!==target)return;
   try{
-    if(action==='nav'){state.view=target.dataset.view;state.filter={};document.getElementById('sidebar')?.classList.remove('open');renderApp();}
+    if(action==='nav'){if(['plans','catalog','templates'].includes(target.dataset.view))await refreshPlans();state.view=target.dataset.view;state.filter={};document.getElementById('sidebar')?.classList.remove('open');renderApp();}
     else if(action==='menu')document.getElementById('sidebar')?.classList.toggle('open');
     else if(action==='close-modal'||action==='backdrop')closeModal();
     else if(action==='logout'){await api('/api/auth/logout','POST',{});state.user=null;state.data={};state.authMode='login';renderAuth();}
@@ -462,6 +524,10 @@ document.addEventListener('click',async event=>{
     else if(action==='new-product')newProduct();
     else if(action==='new-variant')newVariant();
     else if(action==='new-plan')newPlan();
+    else if(action==='edit-plan')newPlan(items('plans').find(plan=>plan.id===Number(target.dataset.id)));
+    else if(action==='toggle-plan'){const plan=items('plans').find(item=>item.id===Number(target.dataset.id));if(plan){await api(`/api/plans/${plan.id}`,'PATCH',{active:!plan.active});await refresh(plan.active?'Plan deactivated.':'Plan activated.');}}
+    else if(action==='request-plan')requestPlan(target.dataset.id);
+    else if(action==='quote-plan'){await refreshPlans();newQuote(null,target.dataset.id);}
     else if(action==='new-tax')newTax();
     else if(action==='new-discount')newDiscount();
     else if(action==='new-template')newTemplate();
@@ -487,6 +553,8 @@ document.addEventListener('click',async event=>{
 document.addEventListener('change',event=>{if(event.target.id==='sub-filter'){state.filter.subStatus=event.target.value;renderApp();}if(event.target.id==='invoice-filter'){state.filter.invoiceStatus=event.target.value;renderApp();}});
 document.addEventListener('input',event=>{if(event.target.id==='sub-search'){state.filter.subQuery=event.target.value;const position=event.target.selectionStart;renderApp();const field=document.getElementById('sub-search');field.focus();field.setSelectionRange(position,position);}});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')closeModal();});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden && state.user)refreshPlans().catch(()=>{});});
+setInterval(()=>{if(state.user && !document.hidden)refreshPlans().catch(()=>{});},20000);
 
 // Initialization
 localStorage.removeItem('brightloop_token'); // Clear tokens saved by older versions of the demo.
