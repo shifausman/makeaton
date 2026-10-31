@@ -1,7 +1,7 @@
 const root = document.getElementById('app');
 const modalRoot = document.getElementById('modal-root');
 const toastRoot = document.getElementById('toast');
-const state = { token: localStorage.getItem('brightloop_token'), user: null, view: 'dashboard', data: {}, authMode: 'login', filter: {} };
+const state = { token: localStorage.getItem('brightloop_token'), user: null, view: 'dashboard', data: {}, authMode: 'login', filter: {}, renewalMonth: null };
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const money = value => new Intl.NumberFormat('en-IN', {style:'currency',currency:'INR',maximumFractionDigits:2}).format((value || 0) / 100);
@@ -10,7 +10,7 @@ const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(
 const items = key => state.data[key]?.items || [];
 const role = () => state.user?.role;
 const canWork = () => role() === 'admin' || role() === 'staff';
-const icon = name => ({dashboard:'◫',catalog:'◈',templates:'▤',staff:'♟',customers:'♙',subscriptions:'↻',invoices:'▧',payments:'◉',reports:'▥',account:'◌'}[name] || '•');
+const icon = name => ({dashboard:'◫',catalog:'◈',templates:'▤',staff:'♟',customers:'♙',subscriptions:'↻',renewals:'▦',invoices:'▧',payments:'◉',reports:'▥',account:'◌'}[name] || '•');
 
 async function api(path, method='GET', body=null) {
   const headers = {'Content-Type':'application/json'};
@@ -34,20 +34,22 @@ function toast(message, error=false) {
 }
 
 const navByRole = {
-  admin: [['dashboard','Overview'],['catalog','Catalog & rules'],['templates','Quote templates'],['staff','Staff access'],['customers','Customers'],['subscriptions','Subscriptions'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
-  staff: [['dashboard','Overview'],['customers','Customers'],['templates','Quote templates'],['subscriptions','Subscriptions'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
-  customer: [['dashboard','My overview'],['subscriptions','My subscriptions'],['invoices','My invoices'],['account','My account']]
+  admin: [['dashboard','Overview'],['catalog','Catalog & rules'],['templates','Quote templates'],['staff','Staff access'],['customers','Customers'],['subscriptions','Subscriptions'],['renewals','Renewals'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
+  staff: [['dashboard','Overview'],['customers','Customers'],['templates','Quote templates'],['subscriptions','Subscriptions'],['renewals','Renewals'],['invoices','Invoices'],['payments','Payments'],['reports','Reports']],
+  customer: [['dashboard','My overview'],['subscriptions','My subscriptions'],['renewals','My renewals'],['invoices','My invoices'],['account','My account']]
 };
-const pageTitles = {dashboard:'Overview',catalog:'Catalog & rules',templates:'Quote templates',staff:'Staff access',customers:'Customers',subscriptions:'Subscriptions',invoices:'Invoices',payments:'Payments',reports:'Reports',account:'My account'};
-const pageDescriptions = {dashboard:'Your subscription business at a glance.',catalog:'Create the products, plans, taxes and discounts that power billing.',templates:'Reusable starting points for customer quotations.',staff:'Only admins can invite team members.',customers:'Customer accounts and contact details.',subscriptions:'Every quote, active plan and renewal in one place.',invoices:'Review, send and track recurring invoices.',payments:'Payments matched to the right invoices.',reports:'A clear view of revenue, collections and what is still owed.',account:'Your account details and access.'};
+const pageTitles = {dashboard:'Overview',catalog:'Catalog & rules',templates:'Quote templates',staff:'Staff access',customers:'Customers',subscriptions:'Subscriptions',renewals:'Renewal calendar',invoices:'Invoices',payments:'Payments',reports:'Reports',account:'My account'};
+const pageDescriptions = {dashboard:'Your subscription business at a glance.',catalog:'Create the products, plans, taxes and discounts that power billing.',templates:'Reusable starting points for customer quotations.',staff:'Only admins can invite team members.',customers:'Customer accounts and contact details.',subscriptions:'Every quote, active plan and renewal in one place.',renewals:'See what is coming due, what needs attention, and what has been billed.',invoices:'Review, send and track recurring invoices.',payments:'Payments matched to the right invoices.',reports:'A clear view of revenue, collections and what is still owed.',account:'Your account details and access.'};
 
 async function loadData() {
   if (!state.user) return;
   const reportFrom=state.filter.reportFrom||`${today().slice(0,8)}01`;
   const reportTo=state.filter.reportTo||today();
+  state.renewalMonth ||= today().slice(0,7);
+  const renewalPath = `/api/renewals?month=${state.renewalMonth}`;
   const paths = role() === 'customer'
-    ? {dashboard:'/api/dashboard',subscriptions:'/api/subscriptions?limit=100',invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100'}
-    : {dashboard:'/api/dashboard',reports:`/api/reports?from=${reportFrom}&to=${reportTo}`,products:'/api/products',plans:'/api/plans',taxes:'/api/taxes',discounts:'/api/discounts',templates:'/api/templates',customers:'/api/customers?limit=100',subscriptions:'/api/subscriptions?limit=100',invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100',...(role() === 'admin' ? {staff:'/api/staff'} : {})};
+    ? {dashboard:'/api/dashboard',subscriptions:'/api/subscriptions?limit=100',renewals:renewalPath,invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100'}
+    : {dashboard:'/api/dashboard',reports:`/api/reports?from=${reportFrom}&to=${reportTo}`,products:'/api/products',plans:'/api/plans',taxes:'/api/taxes',discounts:'/api/discounts',templates:'/api/templates',customers:'/api/customers?limit=100',subscriptions:'/api/subscriptions?limit=100',renewals:renewalPath,invoices:'/api/invoices?limit=100',payments:'/api/payments?limit=100',...(role() === 'admin' ? {staff:'/api/staff'} : {})};
   const values = await Promise.all(Object.entries(paths).map(async ([key,path]) => [key, await api(path)]));
   state.data = Object.fromEntries(values);
 }
@@ -93,7 +95,7 @@ async function handleAuth(event) {
   try {
     if (state.authMode === 'login' || state.authMode === 'signup') {
       const result = await api(state.authMode === 'login' ? '/api/auth/login' : '/api/auth/register','POST',values);
-      state.token = result.token; state.user = result.user; state.view = 'dashboard';
+      state.token = result.token; state.user = result.user; state.view = 'dashboard'; state.renewalMonth = null;
       localStorage.setItem('brightloop_token', result.token);
       await refresh(`Welcome, ${result.user.name.split(' ')[0]}!`);
     } else if (state.authMode === 'forgot') {
@@ -126,6 +128,7 @@ function renderPage() {
     case 'staff': return renderStaff();
     case 'customers': return renderCustomers();
     case 'subscriptions': return renderSubscriptions();
+    case 'renewals': return renderRenewals();
     case 'invoices': return renderInvoices();
     case 'payments': return renderPayments();
     case 'reports': return renderReports();
@@ -138,10 +141,77 @@ function renderDashboard() {
   const d = state.data.dashboard || {};
   const invoices = items('invoices').slice(0,5);
   const subs = items('subscriptions').slice(0,5);
+  const renewal = state.data.renewals?.summary || {};
+  const renewalNotice = `<div class="renewal-dashboard-note"><div><strong>${renewal.due_soon || 0} due in the next 7 days${renewal.overdue ? ` · ${renewal.overdue} overdue` : ''}</strong><span>${role() === 'customer' ? 'See your upcoming billing dates and estimated amounts.' : 'Review the calendar before running billing.'}</span></div><button class="btn btn-sm btn-soft" data-action="nav" data-view="renewals">${role() === 'customer' ? 'My renewals' : 'Open renewal calendar'} →</button></div>`;
   if (role() === 'customer') {
-    return `<div class="welcome-card card"><div><div class="eyebrow" style="color:#82e6d0">YOUR SUBSCRIPTIONS</div><h2>Everything about your plan, in one place.</h2><p>See your billing dates, invoices and plan status whenever you need them.</p></div><button class="btn" data-action="nav" data-view="subscriptions">View my plans →</button></div><div class="stat-grid">${stat('Active subscriptions',d.active,'Your current plans')}${stat('Next billing date',d.next_billing_date?dateText(d.next_billing_date):'—','Upcoming renewal')}${stat('Open balance',money(d.outstanding_cents),'Across your invoices',d.outstanding_cents>0)}${stat('Invoices',d.invoices,'Your billing history')}</div><div class="section-grid"><div class="card"><div class="card-pad card-head"><div><h2>My latest invoices</h2><p>Keep track of what is due and what is paid.</p></div><button class="btn-link" data-action="nav" data-view="invoices">View all →</button></div>${renderInvoiceTable(invoices,true)}</div><div class="card card-pad"><div class="card-head"><h2>My subscriptions</h2></div>${subs.length?`<div class="mini-list">${subs.map(s=>`<div class="mini-row"><div><strong>${esc(s.plan_name)}</strong><small>${esc(s.number)} · ${esc(s.cycle)}</small></div>${badge(s.status)}</div>`).join('')}</div>`:empty('No subscriptions yet','Your team will add one when your quotation is accepted.')}</div></div>`;
+    return `<div class="welcome-card card"><div><div class="eyebrow" style="color:#82e6d0">YOUR SUBSCRIPTIONS</div><h2>Everything about your plan, in one place.</h2><p>See your billing dates, invoices and plan status whenever you need them.</p></div><button class="btn" data-action="nav" data-view="subscriptions">View my plans →</button></div>${renewalNotice}<div class="stat-grid">${stat('Active subscriptions',d.active,'Your current plans')}${stat('Next billing date',d.next_billing_date?dateText(d.next_billing_date):'—','Upcoming renewal')}${stat('Open balance',money(d.outstanding_cents),'Across your invoices',d.outstanding_cents>0)}${stat('Invoices',d.invoices,'Your billing history')}</div><div class="section-grid"><div class="card"><div class="card-pad card-head"><div><h2>My latest invoices</h2><p>Keep track of what is due and what is paid.</p></div><button class="btn-link" data-action="nav" data-view="invoices">View all →</button></div>${renderInvoiceTable(invoices,true)}</div><div class="card card-pad"><div class="card-head"><h2>My subscriptions</h2></div>${subs.length?`<div class="mini-list">${subs.map(s=>`<div class="mini-row"><div><strong>${esc(s.plan_name)}</strong><small>${esc(s.number)} · ${esc(s.cycle)}</small></div>${badge(s.status)}</div>`).join('')}</div>`:empty('No subscriptions yet','Your team will add one when your quotation is accepted.')}</div></div>`;
   }
-  return `<div class="welcome-card card"><div><div class="eyebrow" style="color:#82e6d0">BILLING DAY, HANDLED</div><h2>${d.due_today?`${d.due_today} subscription${d.due_today===1?' is':'s are'} ready to bill.`:'Your billing queue is clear.'}</h2><p>Generate invoices from active subscriptions, with discounts and taxes applied automatically. The same period cannot be invoiced twice.</p></div><button class="btn" data-action="run-billing">Run billing →</button></div><div class="stat-grid">${stat('Active subscriptions',d.active,'Currently running')}${stat('Gross monthly equivalent',money(d.mrr_cents),'Before discounts and tax')}${stat('Payments received',money(d.revenue_cents),'All recorded payments')}${stat('Outstanding',money(d.outstanding_cents),`${d.overdue} overdue invoice${d.overdue===1?'':'s'}`,d.outstanding_cents>0)}</div><div class="section-grid"><div class="card"><div class="card-pad card-head"><div><h2>Latest invoices</h2><p>Recent billing activity across customers.</p></div><button class="btn-link" data-action="nav" data-view="invoices">View all →</button></div>${renderInvoiceTable(invoices,false)}</div><div class="card card-pad"><div class="card-head"><h2>Quick actions</h2></div><div class="stack"><button class="btn btn-soft" data-action="new-quote">+ Create a quotation</button><button class="btn btn-ghost" data-action="new-payment">◉ Record a payment</button>${role()==='admin'?`<button class="btn btn-ghost" data-action="new-plan">◈ Add a new plan</button>`:''}</div><div class="role-note" style="margin:1.2rem 0 0">${d.customers} customer${d.customers===1?'':'s'} · ${d.due_today} due for billing today</div></div></div>`;
+  return `<div class="welcome-card card"><div><div class="eyebrow" style="color:#82e6d0">BILLING DAY, HANDLED</div><h2>${d.due_today?`${d.due_today} subscription${d.due_today===1?' is':'s are'} ready to bill.`:'Your billing queue is clear.'}</h2><p>Generate invoices from active subscriptions, with discounts and taxes applied automatically. The same period cannot be invoiced twice.</p></div><button class="btn" data-action="run-billing">Run billing →</button></div>${renewalNotice}<div class="stat-grid">${stat('Active subscriptions',d.active,'Currently running')}${stat('Gross monthly equivalent',money(d.mrr_cents),'Before discounts and tax')}${stat('Payments received',money(d.revenue_cents),'All recorded payments')}${stat('Outstanding',money(d.outstanding_cents),`${d.overdue} overdue invoice${d.overdue===1?'':'s'}`,d.outstanding_cents>0)}</div><div class="section-grid"><div class="card"><div class="card-pad card-head"><div><h2>Latest invoices</h2><p>Recent billing activity across customers.</p></div><button class="btn-link" data-action="nav" data-view="invoices">View all →</button></div>${renderInvoiceTable(invoices,false)}</div><div class="card card-pad"><div class="card-head"><h2>Quick actions</h2></div><div class="stack"><button class="btn btn-soft" data-action="new-quote">+ Create a quotation</button><button class="btn btn-ghost" data-action="new-payment">◉ Record a payment</button>${role()==='admin'?`<button class="btn btn-ghost" data-action="new-plan">◈ Add a new plan</button>`:''}</div><div class="role-note" style="margin:1.2rem 0 0">${d.customers} customer${d.customers===1?'':'s'} · ${d.due_today} due for billing today</div></div></div>`;
+}
+
+function renewalLabel(event) {
+  if (event.kind === 'billed') return `Billed · ${event.invoice_status}`;
+  if (event.phase === 'overdue') return 'Overdue';
+  if (event.phase === 'due_today') return 'Due today';
+  return event.days_until <= 7 ? 'Due soon' : 'Scheduled';
+}
+
+function renewalAlertList(events, emptyMessage) {
+  if (!events.length) return `<p class="renewal-empty">${esc(emptyMessage)}</p>`;
+  return `<div class="renewal-alert-list">${events.map(event => `<button class="renewal-alert-row" data-action="renewal-detail" data-key="${esc(event.key)}"><span><strong>${esc(canWork() ? event.customer_name : event.plan_name)}</strong><small>${esc(canWork() ? event.plan_name + ' · ' + event.subscription_number : event.subscription_number)} · ${dateText(event.renewal_date)}</small></span><span class="renewal-alert-right"><strong>${money(event.amount_due_cents)}</strong><small class="renewal-phase ${esc(event.phase)}">${esc(renewalLabel(event))}</small></span></button>`).join('')}</div>`;
+}
+
+function renderRenewals() {
+  const data = state.data.renewals;
+  if (!data) return empty('Renewals are loading');
+  const [year, monthNumber] = data.month.split('-').map(Number);
+  const first = new Date(year, monthNumber - 1, 1, 12);
+  const daysInMonth = new Date(year, monthNumber, 0, 12).getDate();
+  const offset = (first.getDay() + 6) % 7;
+  const cellCount = Math.ceil((offset + daysInMonth) / 7) * 7;
+  const eventsByDay = new Map();
+  for (const event of data.calendar) {
+    const day = Number(event.renewal_date.slice(-2));
+    if (!eventsByDay.has(day)) eventsByDay.set(day, []);
+    eventsByDay.get(day).push(event);
+  }
+  const cells = Array.from({length:cellCount}, (_, index) => {
+    const day = index - offset + 1;
+    if (day < 1 || day > daysInMonth) return '<div class="renewal-day outside" aria-hidden="true"></div>';
+    const dayIso = `${data.month}-${String(day).padStart(2,'0')}`;
+    const events = eventsByDay.get(day) || [];
+    return `<div class="renewal-day ${dayIso === data.today ? 'today' : ''}"><div class="renewal-day-number">${day}${dayIso === data.today ? '<span>Today</span>' : ''}</div>${events.map(event => `<button class="renewal-event ${esc(event.phase)}" data-action="renewal-detail" data-key="${esc(event.key)}" title="${esc(event.plan_name + ' · ' + renewalLabel(event) + ' · ' + money(event.amount_due_cents))}"><strong>${esc(canWork() ? event.customer_name : event.plan_name)}</strong><span>${money(event.amount_due_cents)}</span></button>`).join('')}</div>`;
+  }).join('');
+  const summary = data.summary;
+  return `<div class="stat-grid">${stat('Due in 7 days',summary.due_soon,'Active renewals')}${stat('Overdue',summary.overdue,'Billing date has passed',summary.overdue>0)}${stat('Scheduled this month',summary.scheduled_month,'Next billing dates')}${stat('Billed this month',summary.billed_month,'Invoice periods created')}</div>
+    <div class="card renewal-calendar"><div class="renewal-calendar-head"><div><div class="eyebrow">RENEWAL SCHEDULE</div><h2>${first.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</h2><p>Select a renewal to see the subscription, customer, and amount.</p></div><div class="button-row"><button class="btn btn-sm btn-ghost" data-action="renewal-prev" aria-label="Previous month">←</button><button class="btn btn-sm btn-soft" data-action="renewal-today">This month</button><button class="btn btn-sm btn-ghost" data-action="renewal-next" aria-label="Next month">→</button></div></div><div class="renewal-legend"><span><i class="legend-dot upcoming"></i>Scheduled</span><span><i class="legend-dot due_today"></i>Due today</span><span><i class="legend-dot overdue"></i>Overdue</span><span><i class="legend-dot billed"></i>Billed</span></div><div class="renewal-calendar-scroll"><div class="renewal-grid">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => `<div class="renewal-weekday">${day}</div>`).join('')}${cells}</div></div></div>
+    <div class="renewal-alert-grid"><section class="card card-pad"><div class="renewal-alert-head"><h2>Upcoming renewals</h2><span class="pill">Next 7 days · ${summary.due_soon}</span></div>${renewalAlertList(data.alerts.upcoming,'No renewals are due in the next 7 days.')}</section><section class="card card-pad"><div class="renewal-alert-head"><h2>Overdue renewals</h2><span class="pill">${summary.overdue} need billing</span></div>${renewalAlertList(data.alerts.overdue,'No overdue renewals.')}</section><section class="card card-pad"><div class="renewal-alert-head"><h2>Already billed</h2><span class="pill">${summary.billed_month} this month</span></div>${renewalAlertList(data.alerts.billed,'No renewal invoices for this month.')}</section></div>`;
+}
+
+function renewalDetail(key) {
+  const data = state.data.renewals;
+  const event = [...data.calendar, ...data.alerts.upcoming, ...data.alerts.overdue, ...data.alerts.billed].find(item => item.key === key);
+  if (!event) return;
+  const customer = canWork() ? `<div><dt>Customer</dt><dd>${esc(event.customer_name)}<br><span class="muted">${esc(event.customer_email)}</span></dd></div>` : '';
+  const invoice = event.kind === 'billed' ? `<div><dt>Invoice</dt><dd>${esc(event.invoice_number)} · ${badge(event.invoice_status)}</dd></div>` : '';
+  const body = `<dl class="detail-list">${customer}<div><dt>Subscription</dt><dd>${esc(event.subscription_number)}</dd></div><div><dt>Plan</dt><dd>${esc(event.plan_name)} · ${esc(event.cycle)}</dd></div><div><dt>Renewal date</dt><dd>${dateText(event.renewal_date)}</dd></div><div><dt>Status</dt><dd>${esc(renewalLabel(event))}</dd></div><div><dt>${event.kind === 'billed' ? 'Invoiced amount' : 'Estimated amount due'}</dt><dd>${money(event.amount_due_cents)}</dd></div>${invoice}</dl>${event.kind === 'scheduled' ? `<h3>Estimated charges</h3>${table(['Product','Qty','Total'],event.lines.map(line => `<tr><td>${esc(line.description)}</td><td>${line.quantity}</td><td>${money(line.total_cents)}</td></tr>`))}<div class="renewal-price-lines"><div><span>Subtotal</span><strong>${money(event.subtotal_cents)}</strong></div><div><span>Discount</span><strong>−${money(event.discount_cents)}</strong></div><div><span>Tax</span><strong>${money(event.tax_cents)}</strong></div><div class="grand"><span>Estimated total</span><strong>${money(event.amount_due_cents)}</strong></div></div><p class="small muted">Estimate uses the current discount and tax rules. The invoice is final when billing runs.</p>` : `<p class="small muted">This renewal has an invoice. Open Invoices to review its payment status and full details.</p>`}`;
+  const footerAction = event.kind === 'billed' ? `<button class="btn btn-primary" data-action="renewal-invoices">View invoices</button>`
+    : canWork() && ['overdue','due_today'].includes(event.phase) ? `<button class="btn btn-primary" data-action="run-billing">Run billing</button>` : '';
+  showDetails(event.kind === 'billed' ? 'Billed renewal' : 'Scheduled renewal', body, `<button class="btn btn-ghost" data-action="close-modal">Close</button>${footerAction}`);
+}
+
+async function changeRenewalMonth(offset) {
+  const [year, month] = (state.renewalMonth || today().slice(0,7)).split('-').map(Number);
+  const next = new Date(year, month - 1 + offset, 1, 12);
+  const candidate = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2,'0')}`;
+  await selectRenewalMonth(candidate);
+}
+
+async function selectRenewalMonth(candidate) {
+  const data = await api(`/api/renewals?month=${candidate}`);
+  state.renewalMonth = candidate;
+  state.data.renewals = data;
+  renderApp();
 }
 
 function renderCatalog() {
@@ -297,7 +367,7 @@ document.addEventListener('click',async event=>{
     else if(action==='close-modal'||action==='backdrop')closeModal();
     else if(action==='logout'){await api('/api/auth/logout','POST',{});state.token=null;state.user=null;localStorage.removeItem('brightloop_token');state.authMode='login';renderAuth();}
     else if(action.startsWith('auth-')){state.authMode=action.slice(5);renderAuth();}
-    else if(action.startsWith('demo-')){const which=action.slice(5);const creds={admin:['admin@brightloop.test','Admin@123!'],staff:['staff@brightloop.test','Staff@123!'],customer:['asha@demo.test','Customer@123!']}[which];const result=await api('/api/auth/login','POST',{email:creds[0],password:creds[1]});state.token=result.token;state.user=result.user;state.view='dashboard';localStorage.setItem('brightloop_token',result.token);await refresh(`Welcome to the ${which} view.`);}
+    else if(action.startsWith('demo-')){const which=action.slice(5);const creds={admin:['admin@brightloop.test','Admin@123!'],staff:['staff@brightloop.test','Staff@123!'],customer:['asha@demo.test','Customer@123!']}[which];const result=await api('/api/auth/login','POST',{email:creds[0],password:creds[1]});state.token=result.token;state.user=result.user;state.view='dashboard';state.renewalMonth=null;localStorage.setItem('brightloop_token',result.token);await refresh(`Welcome to the ${which} view.`);}
     else if(action==='new-product')newProduct();
     else if(action==='new-variant')newVariant();
     else if(action==='new-plan')newPlan();
@@ -310,6 +380,11 @@ document.addEventListener('click',async event=>{
     else if(action==='new-payment')newPayment();
     else if(action==='pay-invoice')newPayment(target.dataset.id);
     else if(action==='run-billing')await runBilling();
+    else if(action==='renewal-prev')await changeRenewalMonth(-1);
+    else if(action==='renewal-next')await changeRenewalMonth(1);
+    else if(action==='renewal-today')await selectRenewalMonth(today().slice(0,7));
+    else if(action==='renewal-detail')renewalDetail(target.dataset.key);
+    else if(action==='renewal-invoices'){closeModal();state.view='invoices';renderApp();}
     else if(action==='apply-report'){const from=document.getElementById('report-from').value,to=document.getElementById('report-to').value;const report=await api(`/api/reports?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);state.filter.reportFrom=from;state.filter.reportTo=to;state.data.reports=report;renderApp();}
     else if(action==='sub-status')await subscriptionAction(target.dataset.id,target.dataset.status);
     else if(action==='invoice-action')await invoiceAction(target.dataset.id,target.dataset.invoiceAction);

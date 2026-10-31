@@ -24,9 +24,10 @@ The sign-in screen has one-click buttons for these accounts. The starter data in
 
 1. Sign in as **Admin** and inspect **Catalog & rules**. Create a product, plan, tax, discount, or staff account.
 2. Sign in as **Staff** and create a quotation from **Quote templates** or **Subscriptions**. Confirm and activate it.
-3. Press **Run billing**. Due active subscriptions produce Draft invoices with line items, eligible discounts, and taxes. A unique database constraint prevents two invoices for the same subscription and billing period.
-4. Confirm an invoice and record a full or partial payment. A fully paid invoice becomes **Paid**.
-5. Sign in as **Customer** to see only that customer's own subscription and invoices. Plan rules govern pause, resume, close, and renew actions.
+3. Open **Renewals**. The calendar places each active subscription on its next billing date. Select an event to show the customer, plan, date, and estimated amount. Review **Upcoming renewals** (next 7 days) and **Overdue renewals** separately.
+4. Press **Run billing**. Due active subscriptions produce Draft invoices with line items, eligible discounts, and taxes. The calendar then shows the period under **Already billed**. A unique database constraint prevents two invoices for the same subscription and billing period.
+5. Confirm an invoice and record a full or partial payment. A fully paid invoice becomes **Paid**.
+6. Sign in as **Customer** and open **My renewals** to see only that customer's dates and amounts. The customer can also see their own subscriptions and invoices. Plan rules govern pause, resume, close, and renew actions.
 
 ## What is implemented
 
@@ -36,6 +37,7 @@ The sign-in screen has one-click buttons for these accounts. The starter data in
 - Daily, weekly, monthly, and yearly billing cycles; due-date processing; invoice calculation and duplicate protection.
 - Invoice confirmation, cancellation, print view, demo send status, and payment recording.
 - Role-specific dashboards, customer portal, invoice balances, overdue counts, and a summary report. The monthly equivalent metric is gross recurring line value before discounts and tax.
+- Monthly renewal calendar for admin, staff, and customers; customer data is restricted to their own subscriptions. Upcoming and overdue alerts show estimated amounts using the same pricing rules as billing, without consuming discounts. Billed periods use actual invoice amounts.
 - Paginated API lists (25 records by default, maximum 100) and indexes for common billing queries.
 
 ## Test
@@ -44,7 +46,7 @@ The sign-in screen has one-click buttons for these accounts. The starter data in
 python -m unittest discover -s tests -v
 ```
 
-The test uses a temporary database and checks role permissions, the quotation-to-payment flow, invoice totals, duplicate billing prevention, and customer isolation.
+The tests use a temporary database and check role permissions, the quotation-to-payment flow, invoice totals, duplicate billing prevention, renewal alerts, billed periods, and customer isolation.
 
 ## Demo boundaries
 

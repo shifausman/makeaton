@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -17,8 +18,8 @@ class WorkflowTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         app.DB_PATH = Path(cls.tmp.name) / "test.db"
-        app.init_db()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.server.daemon_threads = False
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -29,6 +30,10 @@ class WorkflowTest(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=3)
         cls.tmp.cleanup()
+
+    def setUp(self):
+        app.DB_PATH = Path(self.tmp.name) / f"{self._testMethodName}.db"
+        app.init_db()
 
     def request(self, path, method="GET", body=None, token=None):
         headers = {"Content-Type": "application/json"}
@@ -46,6 +51,63 @@ class WorkflowTest(unittest.TestCase):
         status, result = self.request("/api/auth/login", "POST", {"email": email, "password": password})
         self.assertEqual(status, 200, result)
         return result["token"]
+
+    def test_renewal_calendar_alerts_and_customer_scope(self):
+        admin = self.login("admin@brightloop.test", "Admin@123!")
+        staff = self.login("staff@brightloop.test", "Staff@123!")
+        customer = self.login("asha@demo.test", "Customer@123!")
+        today = app.date.today().isoformat()
+        month = today[:7]
+        self.assertEqual(self.request("/api/renewals?month=wrong", token=admin)[0], 400)
+
+        with closing(app.connect()) as db:
+            discount_uses_before = db.execute("SELECT SUM(usage_count) FROM discounts").fetchone()[0]
+        status, initial = self.request(f"/api/renewals?month={month}", token=admin)
+        self.assertEqual(status, 200, initial)
+        self.assertEqual(initial["summary"]["due_soon"], 1)
+        self.assertEqual(initial["summary"]["overdue"], 0)
+        scheduled = initial["alerts"]["upcoming"][0]
+        self.assertEqual(scheduled["renewal_date"], today)
+        self.assertEqual(scheduled["phase"], "due_today")
+        self.assertEqual(scheduled["amount_due_cents"], scheduled["subtotal_cents"] - scheduled["discount_cents"] + scheduled["tax_cents"])
+        self.assertEqual(len(initial["calendar"]), 1)
+        self.assertEqual(self.request(f"/api/renewals?month={month}", token=staff)[1]["summary"], initial["summary"])
+        own = self.request(f"/api/renewals?month={month}", token=customer)[1]
+        self.assertEqual([event["subscription_id"] for event in own["calendar"]], [scheduled["subscription_id"]])
+        with closing(app.connect()) as db:
+            self.assertEqual(db.execute("SELECT SUM(usage_count) FROM discounts").fetchone()[0], discount_uses_before)
+
+        status, other = self.request("/api/auth/register", "POST", {
+            "name": "Second Customer", "email": "second@demo.test", "password": "Customer@123!"})
+        self.assertEqual(status, 201, other)
+        other_calendar = self.request(f"/api/renewals?month={month}", token=other["token"])[1]
+        self.assertEqual(other_calendar["summary"]["due_soon"], 0)
+        self.assertEqual(other_calendar["calendar"], [])
+
+        yesterday = (app.date.today() - app.timedelta(days=1)).isoformat()
+        with closing(app.connect()) as db:
+            db.execute("UPDATE subscriptions SET next_billing_date=? WHERE id=?", (yesterday, scheduled["subscription_id"]))
+        overdue = self.request(f"/api/renewals?month={month}", token=admin)[1]
+        self.assertEqual(overdue["summary"]["overdue"], 1)
+        self.assertEqual(overdue["summary"]["due_soon"], 0)
+        self.assertEqual(overdue["alerts"]["overdue"][0]["phase"], "overdue")
+        self.assertEqual(overdue["alerts"]["upcoming"], [])
+
+        with closing(app.connect()) as db:
+            db.execute("UPDATE subscriptions SET next_billing_date=? WHERE id=?", (today, scheduled["subscription_id"]))
+        self.assertEqual(self.request("/api/billing/run", "POST", {"through_date": today}, staff)[1]["created"], 1)
+        billed = self.request(f"/api/renewals?month={month}", token=admin)[1]
+        self.assertEqual(billed["summary"]["due_soon"], 0)
+        self.assertEqual(billed["summary"]["billed_month"], 1)
+        self.assertEqual(billed["alerts"]["upcoming"], [])
+        invoice = self.request("/api/invoices", token=admin)[1]["items"][0]
+        self.assertEqual(billed["alerts"]["billed"][0]["amount_due_cents"], invoice["total_cents"])
+        next_date = self.request("/api/subscriptions", token=admin)[1]["items"][0]["next_billing_date"]
+        next_month = self.request(f"/api/renewals?month={next_date[:7]}", token=admin)[1]
+        self.assertEqual(next_month["summary"]["scheduled_month"], 1)
+        self.assertEqual(next_month["calendar"][0]["renewal_date"], next_date)
+        self.assertEqual(self.request(f"/api/renewals?month={month}", token=customer)[1]["summary"]["billed_month"], 1)
+        self.assertEqual(self.request(f"/api/renewals?month={month}", token=other["token"])[1]["summary"]["billed_month"], 0)
 
     def test_three_role_billing_flow(self):
         admin = self.login("admin@brightloop.test", "Admin@123!")

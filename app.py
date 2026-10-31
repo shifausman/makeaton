@@ -219,6 +219,7 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_invoice_customer ON invoices(customer_id);
     CREATE INDEX IF NOT EXISTS idx_invoice_due_status ON invoices(status, due_date);
     CREATE INDEX IF NOT EXISTS idx_invoice_date ON invoices(invoice_date);
+    CREATE INDEX IF NOT EXISTS idx_invoice_period ON invoices(period_start);
     CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
     CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(paid_on);
     """)
@@ -389,15 +390,14 @@ def dashboard(db, user):
             "customers": one(db, "SELECT COUNT(*) n FROM users WHERE role='customer'")["n"]}
 
 
-def create_invoice(db, sub, period_start):
-    items = many(db, """SELECT si.*,t.rate AS tax_rate FROM subscription_items si
-                    LEFT JOIN taxes t ON t.id=si.tax_id WHERE subscription_id=?""", (sub["id"],))
+def price_items(items, rule, period_start):
+    """Calculate an invoice without writing data, for both previews and billing."""
     if not items:
         raise AppError(400, "Subscription has no product lines.")
     bases = [i["quantity"] * i["unit_price_cents"] for i in items]
     subtotal = sum(bases)
     discounts = [0] * len(items)
-    rule = one(db, "SELECT * FROM discounts WHERE id=?", (sub["discount_id"],)) if sub["discount_id"] else None
+    applied_discount_id = None
     if rule and rule["active"] and (not rule["starts_on"] or rule["starts_on"] <= period_start) and (
         not rule["ends_on"] or rule["ends_on"] >= period_start) and (
         rule["usage_limit"] is None or rule["usage_count"] < rule["usage_limit"]):
@@ -412,24 +412,42 @@ def create_invoice(db, sub, period_start):
                 discounts[j] = round(amount * bases[j] / eligible_base)
                 allocated += discounts[j]
             discounts[eligible[-1]] = amount - allocated
-            db.execute("UPDATE discounts SET usage_count=usage_count+1 WHERE id=?", (rule["id"],))
+            applied_discount_id = rule["id"]
     tax_amounts = [round((bases[j] - discounts[j]) * (items[j]["tax_rate"] or 0) / 100) for j in range(len(items))]
     total_discount = sum(discounts)
     total_tax = sum(tax_amounts)
     total = subtotal - total_discount + total_tax
+    lines = [{"description": item["description"], "product_id": item["product_id"],
+              "quantity": item["quantity"], "unit_price_cents": item["unit_price_cents"],
+              "discount_cents": discounts[j], "tax_rate": item["tax_rate"] or 0,
+              "tax_cents": tax_amounts[j], "total_cents": bases[j] - discounts[j] + tax_amounts[j]}
+             for j, item in enumerate(items)]
+    return {"subtotal_cents": subtotal, "discount_cents": total_discount,
+            "tax_cents": total_tax, "total_cents": total, "lines": lines,
+            "applied_discount_id": applied_discount_id}
+
+
+def create_invoice(db, sub, period_start):
+    items = many(db, """SELECT si.*,t.rate AS tax_rate FROM subscription_items si
+                    LEFT JOIN taxes t ON t.id=si.tax_id WHERE subscription_id=?""", (sub["id"],))
+    rule = one(db, "SELECT * FROM discounts WHERE id=?", (sub["discount_id"],)) if sub["discount_id"] else None
+    priced = price_items(items, rule, period_start)
+    if priced["applied_discount_id"]:
+        db.execute("UPDATE discounts SET usage_count=usage_count+1 WHERE id=?", (priced["applied_discount_id"],))
     due = (date.fromisoformat(period_start) + timedelta(days=sub["payment_terms_days"])).isoformat()
     number = f"INV-{db.execute('SELECT COALESCE(MAX(id),0)+1 FROM invoices').fetchone()[0]:05d}"
     invoice_id = db.execute("""INSERT INTO invoices(number,subscription_id,customer_id,period_start,invoice_date,due_date,
                     subtotal_cents,discount_cents,tax_cents,total_cents,status,created_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (number, sub["id"], sub["customer_id"], period_start, date.today().isoformat(), due,
-                     subtotal, total_discount, total_tax, total, "Draft", now())).lastrowid
-    for j, item in enumerate(items):
+                     priced["subtotal_cents"], priced["discount_cents"], priced["tax_cents"],
+                     priced["total_cents"], "Draft", now())).lastrowid
+    for line in priced["lines"]:
         db.execute("""INSERT INTO invoice_lines(invoice_id,description,product_id,quantity,unit_price_cents,
                     discount_cents,tax_rate,tax_cents,total_cents) VALUES(?,?,?,?,?,?,?,?,?)""",
-                   (invoice_id, item["description"], item["product_id"], item["quantity"],
-                    item["unit_price_cents"], discounts[j], item["tax_rate"] or 0, tax_amounts[j],
-                    bases[j] - discounts[j] + tax_amounts[j]))
+                   (invoice_id, line["description"], line["product_id"], line["quantity"],
+                    line["unit_price_cents"], line["discount_cents"], line["tax_rate"],
+                    line["tax_cents"], line["total_cents"]))
     return invoice_id
 
 
@@ -464,6 +482,102 @@ def run_billing(db, target):
     except Exception:
         db.execute("ROLLBACK")
         raise
+
+
+def renewal_calendar(db, user, month):
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
+        raise AppError(400, "Month must use YYYY-MM format.")
+    month_start = date.fromisoformat(month + "-01")
+    if not 2000 <= month_start.year <= 2100:
+        raise AppError(400, "Choose a month between 2000 and 2100.")
+    month_end = add_cycle(month_start, "monthly", month_start).isoformat()
+    month_start = month_start.isoformat()
+    today_date = date.today()
+    today_iso = today_date.isoformat()
+    alert_end = (today_date + timedelta(days=7)).isoformat()
+    customer_scope = " AND s.customer_id=?" if user["role"] == "customer" else ""
+    customer_args = (user["id"],) if user["role"] == "customer" else ()
+    due_where = """s.status='Active' AND s.next_billing_date IS NOT NULL
+                   AND (s.expiry_date IS NULL OR s.next_billing_date<=s.expiry_date)"""
+    due_select = """SELECT s.id AS subscription_id,s.number AS subscription_number,
+                    s.customer_id,u.name AS customer_name,u.email AS customer_email,
+                    p.name AS plan_name,p.cycle,s.next_billing_date AS renewal_date,
+                    s.discount_id,s.payment_terms_days FROM subscriptions s
+                    JOIN users u ON u.id=s.customer_id JOIN plans p ON p.id=s.plan_id"""
+
+    def due_rows(condition, args, order, limit):
+        return many(db, f"""{due_select} WHERE {due_where} AND {condition}{customer_scope}
+                    ORDER BY s.next_billing_date {order},s.id LIMIT ?""",
+                    (*args, *customer_args, limit))
+
+    def due_count(condition, args):
+        return one(db, f"""SELECT COUNT(*) n FROM subscriptions s WHERE {due_where}
+                   AND {condition}{customer_scope}""", (*args, *customer_args))["n"]
+
+    month_rows = due_rows("s.next_billing_date>=? AND s.next_billing_date<?",
+                          (month_start, month_end), "ASC", 500)
+    upcoming_rows = due_rows("s.next_billing_date>=? AND s.next_billing_date<=?",
+                             (today_iso, alert_end), "ASC", 25)
+    overdue_rows = due_rows("s.next_billing_date<?", (today_iso,), "ASC", 25)
+    due_soon_count = due_count("s.next_billing_date>=? AND s.next_billing_date<=?", (today_iso, alert_end))
+    overdue_count = due_count("s.next_billing_date<?", (today_iso,))
+    scheduled_month_count = due_count("s.next_billing_date>=? AND s.next_billing_date<?", (month_start, month_end))
+
+    scheduled = {row["subscription_id"]: row for row in month_rows + upcoming_rows + overdue_rows}
+    item_map = {sid: [] for sid in scheduled}
+    rule_map = {}
+    if scheduled:
+        ids = list(scheduled)
+        marks = ",".join("?" for _ in ids)
+        for item in many(db, f"""SELECT si.*,t.rate AS tax_rate FROM subscription_items si
+                             LEFT JOIN taxes t ON t.id=si.tax_id
+                             WHERE si.subscription_id IN ({marks}) ORDER BY si.id""", ids):
+            item_map[item["subscription_id"]].append(item)
+        rule_ids = sorted({row["discount_id"] for row in scheduled.values() if row["discount_id"]})
+        if rule_ids:
+            rule_marks = ",".join("?" for _ in rule_ids)
+            rule_map = {row["id"]: row for row in many(db, f"SELECT * FROM discounts WHERE id IN ({rule_marks})", rule_ids)}
+
+    def scheduled_event(row):
+        renewal_date = row["renewal_date"]
+        priced = price_items(item_map[row["subscription_id"]], rule_map.get(row["discount_id"]), renewal_date)
+        days_until = (date.fromisoformat(renewal_date) - today_date).days
+        return {"key": f"scheduled-{row['subscription_id']}", "kind": "scheduled",
+                "phase": "overdue" if days_until < 0 else "due_today" if days_until == 0 else "upcoming",
+                "subscription_id": row["subscription_id"], "subscription_number": row["subscription_number"],
+                "customer_id": row["customer_id"], "customer_name": row["customer_name"],
+                "customer_email": row["customer_email"], "plan_name": row["plan_name"],
+                "cycle": row["cycle"], "renewal_date": renewal_date, "days_until": days_until,
+                "amount_due_cents": priced["total_cents"], "subtotal_cents": priced["subtotal_cents"],
+                "discount_cents": priced["discount_cents"], "tax_cents": priced["tax_cents"],
+                "lines": priced["lines"]}
+
+    event_map = {sid: scheduled_event(row) for sid, row in scheduled.items()}
+    invoice_scope = " AND i.customer_id=?" if user["role"] == "customer" else ""
+    billed_rows = many(db, f"""SELECT i.id AS invoice_id,i.number AS invoice_number,i.status AS invoice_status,
+                       i.total_cents AS amount_due_cents,i.period_start AS renewal_date,
+                       s.id AS subscription_id,s.number AS subscription_number,s.customer_id,
+                       u.name AS customer_name,u.email AS customer_email,p.name AS plan_name,p.cycle
+                       FROM invoices i JOIN subscriptions s ON s.id=i.subscription_id
+                       JOIN users u ON u.id=i.customer_id JOIN plans p ON p.id=s.plan_id
+                       WHERE i.status!='Cancelled' AND i.period_start>=? AND i.period_start<?{invoice_scope}
+                       ORDER BY i.period_start DESC,i.id DESC LIMIT 500""",
+                       (month_start, month_end, *customer_args))
+    billed_events = [{**row, "key": f"billed-{row['invoice_id']}", "kind": "billed", "phase": "billed"}
+                     for row in billed_rows]
+    billed_count = one(db, f"""SELECT COUNT(*) n FROM invoices i WHERE i.status!='Cancelled'
+                       AND i.period_start>=? AND i.period_start<?""" +
+                       (" AND i.customer_id=?" if user["role"] == "customer" else ""),
+                       (month_start, month_end, *customer_args))["n"]
+    calendar_events = [event_map[row["subscription_id"]] for row in month_rows] + billed_events
+    calendar_events.sort(key=lambda row: (row["renewal_date"], row["kind"], row["subscription_id"]))
+    return {"month": month, "today": today_iso, "alert_window_days": 7,
+            "summary": {"due_soon": due_soon_count, "overdue": overdue_count,
+                        "scheduled_month": scheduled_month_count, "billed_month": billed_count},
+            "calendar": calendar_events,
+            "alerts": {"upcoming": [event_map[row["subscription_id"]] for row in upcoming_rows],
+                       "overdue": [event_map[row["subscription_id"]] for row in overdue_rows],
+                       "billed": billed_events[:12]}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -587,6 +701,9 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": True}, 200
         if path == "/api/dashboard" and method == "GET":
             return dashboard(db, user), 200
+        if path == "/api/renewals" and method == "GET":
+            month = params.get("month", [date.today().strftime("%Y-%m")])[0]
+            return renewal_calendar(db, user, month), 200
         if path == "/api/reports" and method == "GET":
             allow(user, "admin", "staff")
             start = iso(params.get("from", [date.today().replace(day=1).isoformat()])[0], "From date")
