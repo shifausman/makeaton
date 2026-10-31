@@ -1,6 +1,6 @@
 # Brightloop subscription management demo
 
-A local, dependency-free hackathon app for three roles: admin, staff, and customer. It uses Python's standard library, SQLite, and a responsive HTML/CSS/JavaScript interface.
+A hackathon app for three roles: admin, staff, and customer. It uses Python's standard library, SQLite for local development, optional PostgreSQL for a shared deployment, and a responsive HTML/CSS/JavaScript interface.
 
 ## Run
 
@@ -9,6 +9,15 @@ python app.py
 ```
 
 Open **http://127.0.0.1:8000/**. The database is created automatically in `data/brightloop.db` on first run.
+
+### Connect Supabase PostgreSQL
+
+1. Install the PostgreSQL driver: `python -m pip install -r requirements.txt`.
+2. In Supabase, open **Connect → Session pooler** and copy its PostgreSQL connection string (port `5432`). The direct `db.PROJECT_REF.supabase.co` host requires IPv6; the Session pooler works on IPv4 networks.
+3. Copy `.env.example` to `.env`, replace the placeholder with that connection string, and keep `.env` private. It is excluded from Git.
+4. Stop the app, run `python migrate_to_postgres.py` once to copy the existing SQLite data into an **empty** PostgreSQL database, then run `python app.py` again. The app reads `.env` when launched directly and all roles use that one PostgreSQL database.
+
+The migration stops if Brightloop tables in PostgreSQL already contain records. The SQLite file remains as a local backup.
 
 ### Demo accounts
 
@@ -54,6 +63,6 @@ The tests use a temporary database and check role permissions, plan updates and 
 
 This app runs on `127.0.0.1` and uses fictional INR amounts. **Run billing** represents the scheduled billing job so judges can trigger it on demand. **Mark sent** records a send timestamp; it does not email an invoice. Password-reset links are shown locally because no email service is configured. Payments are recorded against invoices; no bank or card gateway is connected. These integrations should be added before a production deployment.
 
-All roles on this local server use the same `data/brightloop.db` file. Existing databases are upgraded automatically on startup. A deployment with multiple app instances should use one shared PostgreSQL database (for example Supabase) and move the SQLite queries to a PostgreSQL driver; separate local SQLite files would not share plan changes between instances.
+All roles on one local server use the same `data/brightloop.db` file. Existing databases are upgraded automatically on startup. When `BRIGHTLOOP_DATABASE_URL` is configured, the backend uses shared PostgreSQL instead, including the existing role and customer data checks.
 
 The seeded passwords and local reset links are for the hackathon demo only. Do not expose this server to the internet with the demo accounts enabled.

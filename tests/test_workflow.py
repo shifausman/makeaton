@@ -16,6 +16,8 @@ import app
 class WorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.original_database_url = app.DATABASE_URL
+        app.DATABASE_URL = ""
         cls.tmp = tempfile.TemporaryDirectory()
         app.DB_PATH = Path(cls.tmp.name) / "test.db"
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
@@ -30,6 +32,7 @@ class WorkflowTest(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=3)
         cls.tmp.cleanup()
+        app.DATABASE_URL = cls.original_database_url
 
     def setUp(self):
         app.DB_PATH = Path(self.tmp.name) / f"{self._testMethodName}.db"
