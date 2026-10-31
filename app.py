@@ -17,19 +17,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("BRIGHTLOOP_DB", str(ROOT / "data" / "brightloop.db")))
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
 PASSWORD_RE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).{9,}$")
 
-
 class AppError(Exception):
     def __init__(self, status: int, message: str):
         self.status = status
         self.message = message
-
 
 def connect():
     db = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)
@@ -38,22 +35,18 @@ def connect():
     db.execute("PRAGMA busy_timeout = 10000")
     return db
 
-
 def one(db, sql, args=()):
     row = db.execute(sql, args).fetchone()
     return dict(row) if row else None
 
-
 def many(db, sql, args=()):
     return [dict(r) for r in db.execute(sql, args).fetchall()]
-
 
 def required(value, label, max_len=200):
     value = str(value or "").strip()
     if not value or len(value) > max_len:
         raise AppError(400, f"{label} is required (maximum {max_len} characters).")
     return value
-
 
 def integer(value, label, minimum=None, maximum=None):
     try:
@@ -64,7 +57,6 @@ def integer(value, label, minimum=None, maximum=None):
         raise AppError(400, f"{label} is out of range.")
     return result
 
-
 def cents(value, label, minimum=0):
     try:
         result = round(float(value) * 100)
@@ -74,27 +66,22 @@ def cents(value, label, minimum=0):
         raise AppError(400, f"{label} is out of range.")
     return result
 
-
 def iso(value, label):
     try:
         return date.fromisoformat(str(value)).isoformat()
     except ValueError:
         raise AppError(400, f"{label} must be a valid date.")
 
-
 def optional_iso(value, label):
     return iso(value, label) if value else None
 
-
 def now():
     return datetime.now().replace(microsecond=0).isoformat()
-
 
 def password_hash(password):
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 210_000)
     return f"{salt.hex()}:{digest.hex()}"
-
 
 def check_password(password, stored):
     try:
@@ -103,7 +90,6 @@ def check_password(password, stored):
         return hmac.compare_digest(actual, bytes.fromhex(hash_hex))
     except (ValueError, AttributeError):
         return False
-
 
 def add_cycle(current: date, cycle: str, anchor: date):
     if cycle == "daily":
@@ -120,11 +106,9 @@ def add_cycle(current: date, cycle: str, anchor: date):
         return date(year, anchor.month, min(anchor.day, calendar.monthrange(year, anchor.month)[1]))
     raise AppError(400, "Unknown billing cycle.")
 
-
 def validate_password(password):
     if not PASSWORD_RE.match(str(password or "")):
         raise AppError(400, "Password needs 9+ characters, uppercase, lowercase, and a special character.")
-
 
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -264,10 +248,8 @@ def init_db():
     finally:
         db.close()
 
-
 def token_hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
-
 
 def create_session(db, user_id):
     token = secrets.token_urlsafe(32)
@@ -275,22 +257,24 @@ def create_session(db, user_id):
     db.execute("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)", (token_hash(token), user_id, expiry))
     return token
 
-
+# SECURITY UPDATE: Read HttpOnly cookie from headers
 def current_user(db, headers):
-    auth = headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    cookie_header = headers.get("Cookie", "")
+    match = re.search(r"brightloop_token=([a-zA-Z0-9_\-]+)", cookie_header)
+    
+    if not match:
         raise AppError(401, "Please sign in.")
+        
+    token = match.group(1)
     user = one(db, """SELECT u.id,u.name,u.email,u.role FROM sessions s JOIN users u ON u.id=s.user_id
-                  WHERE s.token_hash=? AND s.expires_at>?""", (token_hash(auth[7:]), now()))
+                  WHERE s.token_hash=? AND s.expires_at>?""", (token_hash(token), now()))
     if not user:
         raise AppError(401, "Session expired. Please sign in again.")
     return user
 
-
 def allow(user, *roles):
     if user["role"] not in roles:
         raise AppError(403, "You do not have access to this action.")
-
 
 def paged(db, sql, args, params):
     page = integer(params.get("page", ["1"])[0], "page", 1)
@@ -299,15 +283,13 @@ def paged(db, sql, args, params):
     return {"items": many(db, sql + " LIMIT ? OFFSET ?", (*args, limit, (page - 1) * limit)),
             "total": total, "page": page, "limit": limit}
 
-
 def product_list(db):
     products = many(db, """SELECT p.*,t.name AS tax_name,t.rate AS tax_rate FROM products p
-                     LEFT JOIN taxes t ON t.id=p.tax_id ORDER BY p.id DESC""")
+                      LEFT JOIN taxes t ON t.id=p.tax_id ORDER BY p.id DESC""")
     variants = many(db, "SELECT * FROM variants ORDER BY id")
     for product in products:
         product["variants"] = [v for v in variants if v["product_id"] == product["id"]]
     return products
-
 
 def subscription_list(db, user, params):
     where = "WHERE s.customer_id=?" if user["role"] == "customer" else "WHERE 1=1"
@@ -334,7 +316,6 @@ def subscription_list(db, user, params):
             sub["lines"] = [item for item in items if item["subscription_id"] == sub["id"]]
     return result
 
-
 def invoice_list(db, user, params):
     where = "WHERE i.customer_id=?" if user["role"] == "customer" else "WHERE 1=1"
     args = (user["id"],) if user["role"] == "customer" else ()
@@ -356,7 +337,6 @@ def invoice_list(db, user, params):
             invoice["outstanding_cents"] = max(0, invoice["total_cents"] - invoice["paid_cents"])
             invoice["overdue"] = invoice["status"] not in ("Paid", "Cancelled") and invoice["due_date"] < date.today().isoformat()
     return result
-
 
 def dashboard(db, user):
     if user["role"] == "customer":
@@ -389,9 +369,7 @@ def dashboard(db, user):
             "overdue": overdue, "due_today": due, "mrr_cents": mrr,
             "customers": one(db, "SELECT COUNT(*) n FROM users WHERE role='customer'")["n"]}
 
-
 def price_items(items, rule, period_start):
-    """Calculate an invoice without writing data, for both previews and billing."""
     if not items:
         raise AppError(400, "Subscription has no product lines.")
     bases = [i["quantity"] * i["unit_price_cents"] for i in items]
@@ -426,7 +404,6 @@ def price_items(items, rule, period_start):
             "tax_cents": total_tax, "total_cents": total, "lines": lines,
             "applied_discount_id": applied_discount_id}
 
-
 def create_invoice(db, sub, period_start):
     items = many(db, """SELECT si.*,t.rate AS tax_rate FROM subscription_items si
                     LEFT JOIN taxes t ON t.id=si.tax_id WHERE subscription_id=?""", (sub["id"],))
@@ -449,7 +426,6 @@ def create_invoice(db, sub, period_start):
                     line["unit_price_cents"], line["discount_cents"], line["tax_rate"],
                     line["tax_cents"], line["total_cents"]))
     return invoice_id
-
 
 def run_billing(db, target):
     db.execute("BEGIN IMMEDIATE")
@@ -482,7 +458,6 @@ def run_billing(db, target):
     except Exception:
         db.execute("ROLLBACK")
         raise
-
 
 def renewal_calendar(db, user, month):
     if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
@@ -530,8 +505,8 @@ def renewal_calendar(db, user, month):
         ids = list(scheduled)
         marks = ",".join("?" for _ in ids)
         for item in many(db, f"""SELECT si.*,t.rate AS tax_rate FROM subscription_items si
-                             LEFT JOIN taxes t ON t.id=si.tax_id
-                             WHERE si.subscription_id IN ({marks}) ORDER BY si.id""", ids):
+                              LEFT JOIN taxes t ON t.id=si.tax_id
+                              WHERE si.subscription_id IN ({marks}) ORDER BY si.id""", ids):
             item_map[item["subscription_id"]].append(item)
         rule_ids = sorted({row["discount_id"] for row in scheduled.values() if row["discount_id"]})
         if rule_ids:
@@ -579,18 +554,23 @@ def renewal_calendar(db, user, month):
                        "overdue": [event_map[row["subscription_id"]] for row in overdue_rows],
                        "billed": billed_events[:12]}}
 
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "BrightloopDemo/1.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def send_json(self, data, status=200):
+    # SECURITY UPDATE: Added ability to send cookies in the headers
+    def send_json(self, data, status=200, cookies=None):
         raw = json.dumps(data, separators=(",", ":"), default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        
+        if cookies:
+            for cookie in cookies:
+                self.send_header("Set-Cookie", cookie)
+                
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -616,14 +596,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self.dispatch("PATCH")
 
+    # SECURITY UPDATE: Handle 3-tuple return from api() that includes cookies
     def dispatch(self, method):
         parsed = urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return self.static(parsed.path)
         db = connect()
         try:
-            result, status = self.api(db, method, parsed.path, parse_qs(parsed.query))
-            self.send_json(result, status)
+            result = self.api(db, method, parsed.path, parse_qs(parsed.query))
+            if len(result) == 3:
+                payload, status, cookies = result
+                self.send_json(payload, status, cookies)
+            else:
+                payload, status = result
+                self.send_json(payload, status)
         except AppError as error:
             self.send_json({"error": error.message}, error.status)
         except sqlite3.IntegrityError as error:
@@ -660,14 +646,23 @@ class Handler(BaseHTTPRequestHandler):
                 raise AppError(400, "Enter a valid email address.")
             uid = db.execute("INSERT INTO users(name,email,password_hash,role,created_at) VALUES(?,?,?,?,?)",
                              (name, email, password_hash(password), "customer", now())).lastrowid
-            return {"token": create_session(db, uid), "user": one(db, "SELECT id,name,email,role FROM users WHERE id=?", (uid,))}, 201
+            
+            # SECURITY UPDATE: Return HttpOnly Cookie
+            token = create_session(db, uid)
+            cookie = f"brightloop_token={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800"
+            return {"user": one(db, "SELECT id,name,email,role FROM users WHERE id=?", (uid,))}, 201, [cookie]
+            
         if path == "/api/auth/login" and method == "POST":
             email = str(data.get("email") or "").strip().lower()
             user = one(db, "SELECT * FROM users WHERE email=?", (email,))
             if not user or not check_password(str(data.get("password") or ""), user["password_hash"]):
                 raise AppError(401, "Incorrect email or password.")
-            return {"token": create_session(db, user["id"]),
-                    "user": {key: user[key] for key in ("id", "name", "email", "role")}}, 200
+                
+            # SECURITY UPDATE: Return HttpOnly Cookie
+            token = create_session(db, user["id"])
+            cookie = f"brightloop_token={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800"
+            return {"user": {key: user[key] for key in ("id", "name", "email", "role")}}, 200, [cookie]
+            
         if path == "/api/auth/forgot" and method == "POST":
             email = str(data.get("email") or "").strip().lower()
             user = one(db, "SELECT id FROM users WHERE email=?", (email,))
@@ -677,9 +672,9 @@ class Handler(BaseHTTPRequestHandler):
                 expiry = (datetime.now() + timedelta(minutes=30)).replace(microsecond=0).isoformat()
                 db.execute("INSERT INTO password_resets(token_hash,user_id,expires_at) VALUES(?,?,?)",
                            (token_hash(token), user["id"], expiry))
-                # Local hackathon mode: show the link in the browser because no email service is configured.
                 response["demo_reset_link"] = f"http://{HOST}:{PORT}/?reset={token}"
             return response, 200
+            
         if path == "/api/auth/reset" and method == "POST":
             token = required(data.get("token"), "Reset token", 200)
             password = str(data.get("password") or "")
@@ -694,11 +689,19 @@ class Handler(BaseHTTPRequestHandler):
             return {"message": "Password changed. Please sign in."}, 200
 
         user = current_user(db, self.headers)
+        
         if path == "/api/me" and method == "GET":
             return {"user": user}, 200
+            
         if path == "/api/auth/logout" and method == "POST":
-            db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(self.headers["Authorization"][7:]),))
-            return {"ok": True}, 200
+            # SECURITY UPDATE: Clear session from DB and clear cookie in browser
+            cookie_header = self.headers.get("Cookie", "")
+            match = re.search(r"brightloop_token=([a-zA-Z0-9_\-]+)", cookie_header)
+            if match:
+                db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(match.group(1)),))
+            clear_cookie = "brightloop_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+            return {"ok": True}, 200, [clear_cookie]
+            
         if path == "/api/dashboard" and method == "GET":
             return dashboard(db, user), 200
         if path == "/api/renewals" and method == "GET":
@@ -990,7 +993,6 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("UPDATE invoices SET status='Paid' WHERE id=?", (invoice_id,))
             return {"id": pid}, 201
         raise AppError(404, "API route not found.")
-
 
 if __name__ == "__main__":
     init_db()
